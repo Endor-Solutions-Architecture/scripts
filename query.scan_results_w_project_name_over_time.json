@@ -1,0 +1,26 @@
+{
+  "meta": {
+    "name": "Scan Results with Project Name for a given time period"
+  },
+  "spec": {
+    "query_spec": {
+      "kind": "ScanResult",
+      "list_parameters": {
+        "filter": "meta.create_time >= date(2024-08-07)",
+        "mask": "meta.parent_uuid,spec.start_time,spec.end_time,spec.stats,spec.runtimes,spec.environment.arch,spec.environment.os,spec.environment.memory,spec.environment.num_cpus,spec.environment.endorctl_version,spec.exit_code,spec.status"
+      },
+      "references": [
+        {
+          "connect_from": "meta.parent_uuid",
+          "connect_to": "uuid",
+          "query_spec": {
+            "kind": "Project",
+            "list_parameters": {
+              "mask": "uuid,meta.name" 
+            }
+          }
+        }
+      ]
+    }
+  }
+}
