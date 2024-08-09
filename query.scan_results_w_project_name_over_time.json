@@ -1,4 +1,7 @@
 {
+  "tenant_meta": {
+    "namespace": "scott-learn"
+  },
   "meta": {
     "name": "Scan Results with Project Name for a given time period"
   },
