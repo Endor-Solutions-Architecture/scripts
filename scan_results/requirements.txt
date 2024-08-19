@@ -1,0 +1,5 @@
+typer
+requests
+colorlog
+pandas
+openpyxl

@@ -1,6 +1,6 @@
 {
   "tenant_meta": {
-    "namespace": ""
+    "namespace": "five9"
   },
   "meta": {
     "name": "Scan Results with Project Name for a given time period"
@@ -9,8 +9,8 @@
     "query_spec": {
       "kind": "ScanResult",
       "list_parameters": {
-        "filter": "context.type==CONTEXT_TYPE_MAIN and meta.create_time >= date(2024-08-07)",
-        "mask": "meta.parent_uuid,context.type,spec.start_time,spec.end_time,spec.stats,spec.runtimes,spec.environment.config.QuickScan,spec.environment.arch,spec.environment.os,spec.environment.memory,spec.environment.num_cpus,spec.environment.endorctl_version,spec.exit_code,spec.status"
+        "filter": "spec.type==TYPE_ALL_SCANS and context.type==CONTEXT_TYPE_MAIN and meta.create_time >= date(2024-04-15)",
+        "mask": "meta.parent_uuid,context.type,spec.start_time,spec.end_time,spec.stats,spec.runtimes,spec.environment.config,spec.environment.arch,spec.environment.os,spec.environment.memory,spec.environment.num_cpus,spec.environment.endorctl_version,spec.exit_code,spec.status"
       },
       "references": [
         {
