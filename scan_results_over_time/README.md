@@ -1,4 +1,4 @@
-# scan_results
+# Report on scan results over a given time period
 Generate a report of scan results over a given time period in either csv of excel format.
 
 ## set up script
