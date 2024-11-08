@@ -68,7 +68,7 @@ def add_public_to_path(path, package_version):
         dep_match = [x for x in deps_list if x['name'] == dep]
         logger.debug(f"{dep_match=}")
         if not dep_match:
-            dep_match = [{"public": "N/A"}]
+            dep_match = [{"public": False}]
         path_list.append(
             {
                 "dependency_name": dep,
@@ -105,8 +105,9 @@ def get_all_dep_paths_for_dep(package_version, dep, finding_uuid, current_path=N
 
 
 if __name__ == "__main__":
-    auth_token = endor_api_get_auth_token(ENDOR_API_CREDENTIALS_KEY, ENDOR_API_CREDENTIALS_SECRET)
-    #auth_token=os.getenv("ENDOR_TOKEN")
+    auth_token=os.getenv("ENDOR_TOKEN")
+    if not auth_token:
+        auth_token = endor_api_get_auth_token(ENDOR_API_CREDENTIALS_KEY, ENDOR_API_CREDENTIALS_SECRET)
 
     finding = get_finding(auth_token, namespace, finding_uuid)
     logger.debug(f"{finding=}")
