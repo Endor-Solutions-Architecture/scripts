@@ -31,7 +31,7 @@ Each path is an ordered list starting with the dependency of the finding itself 
             },
             {
                 "dependency_name": "npm://startpage@0.1.0",
-                "public": "N/A"
+                "public": false
             }
         ],
         [
@@ -41,7 +41,7 @@ Each path is an ordered list starting with the dependency of the finding itself 
             },
             {
                 "dependency_name": "npm://startpage@0.1.0",
-                "public": "N/A"
+                "public": false
             }
         ]
     ]
