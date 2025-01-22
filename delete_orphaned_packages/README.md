@@ -20,6 +20,10 @@ pip install -r requirements.txt
 Step 3: run the script
 ```
 python3 main.py 
+
+No packages will be deleted. To delete orphaned packages, run the script with the --no-dry-run flag
+
+python3 main.py --no-dry-run
 ```
 
 ## No Warranty
