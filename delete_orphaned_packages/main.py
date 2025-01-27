@@ -41,6 +41,9 @@ HEADERS = {
 }
 
 def get_orphaned_packages_uuid():
+    print("Getting projects UUIDs...")
+    projects = get_all_projects()
+    project_uuids = [project.get("uuid") for project in projects]
     print("Fetching orphaned packages...")
     query_data = {
         "tenant_meta": {
@@ -56,20 +59,7 @@ def get_orphaned_packages_uuid():
                     "filter": "context.type==CONTEXT_TYPE_MAIN",
                     "mask": "uuid,spec.project_uuid,tenant_meta",
                     "traverse": True
-                },
-                "references": [
-                    {
-                        "connect_from": "spec.project_uuid",
-                        "connect_to": "uuid",
-                        "query_spec": {
-                            "kind": "Project",
-                            "list_parameters": {
-                                "filter": "uuid != NULL",
-                                "mask": "uuid"
-                            }
-                        }
-                    }
-                ]
+                }
             }
         }
     }
@@ -100,10 +90,12 @@ def get_orphaned_packages_uuid():
             # Process the results
             for package in packages:
                 package_uuid = package.get("uuid")
-                project_list = package.get("meta", {}).get("references", {}).get("Project", {}).get("list", {}).get("objects", [])
-                if len(project_list) == 0:
+                tenant_name = package.get("tenant_meta", {}).get("namespace")
+                project_uuid = package.get("spec", {}).get("project_uuid")
+                #only add orphaned packages that are not part of any project
+                if project_uuid not in project_uuids:
                     orphaned_packages.append(package)
-                    print(f"Found package without parent project. Package version: {package_uuid}")
+                    print(f"Found package without parent project. Package version: {package_uuid}, tenant-name: {tenant_name}, project-uuid: {project_uuid}")
 
             # Check for next page
             next_page_id = response_data.get("spec", {}).get("query_response", {}).get("list", {}).get("response", {}).get("next_page_token")
@@ -116,13 +108,60 @@ def get_orphaned_packages_uuid():
         print(f"An error occurred while fetching orphaned packages: {e}")
         return []
 
+
+def get_all_projects():
+    print("Fetching projects...")
+   
+    url = f"{API_URL}/namespaces/{ENDOR_NAMESPACE}/projects"
+    print(f"URL: {url}")
+    
+    params = {'list_parameters.mask': 'uuid',
+              'list_parameters.traverse': True}
+    
+    projects_list = []
+    next_page_id = None
+
+    while True:
+        if next_page_id:
+            params['list_parameters.page_id'] = next_page_id
+
+        response = requests.get(url, headers=HEADERS, params=params, timeout=600)
+
+        if response.status_code != 200:
+            print(f"Failed to get projects, Status Code: {response.status_code}, Response: {response.text}")
+            exit()
+
+        response_data = response.json()
+        projects = response_data.get('list', {}).get('objects', [])
+        for project in projects:
+            project_info = {
+                'uuid': project['uuid'],
+            }
+            projects_list.append(project_info)
+
+        next_page_id = response_data.get('list', {}).get('response', {}).get('next_page_id')
+        if not next_page_id:
+            break
+
+    print(f"Total projects fetched: {len(projects_list)}")
+    return projects_list
+
+def get_project(project_uuid):
+    url = f"{API_URL}/namespaces/{ENDOR_NAMESPACE}/projects/{project_uuid}"
+    response = requests.get(url, headers=HEADERS, timeout=60)
+    if response.status_code == 200:
+        return True
+    else:
+        return False
+
 def delete_orphaned_packages(orphaned_packages):
     print("Deleting orphaned packages...")
     for package in orphaned_packages:
         package_uuid = package.get("uuid")
+        project_uuid = package.get("spec", {}).get("project_uuid")
         tenant_name = package.get("tenant_meta", {}).get("namespace")
 
-        if package_uuid and tenant_name:
+        if not get_project(project_uuid) and package_uuid and tenant_name:
             url = f"{API_URL}/namespaces/{tenant_name}/package-versions/{package_uuid}"
             try:
                 print(f"Deleting package with UUID: {package_uuid}")
@@ -133,7 +172,8 @@ def delete_orphaned_packages(orphaned_packages):
                     print(f"Failed to delete package with UUID: {package_uuid}. Status Code: {response.status_code}, Response: {response.text}")
             except requests.RequestException as e:
                 print(f"An error occurred while deleting package with UUID: {package_uuid}: {e}")
-
+        else:
+            print(f"Skipping package with UUID: {package_uuid}, as it is part of a project.")
 
 def main():
     parser = argparse.ArgumentParser(description="Fetch and delete orphaned packages.")
