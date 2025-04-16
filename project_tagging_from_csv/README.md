@@ -18,9 +18,9 @@ Make sure to have a CSV with no header row and format should be: column1 = git p
 
 Example csv format:
 
-project1, tagABC
-project2,
-project3,"PRO, DataTeam"
+project1, tagABC  \n
+project2, \n
+project3,"PRO, DataTeam" \n
 
 
 Make sure the project name does not include the git org name as this is declared on the .env file and later appended on the code to each project name per row. 
