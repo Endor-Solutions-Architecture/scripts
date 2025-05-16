@@ -7,7 +7,7 @@ project_uuids = [
 ]
 
 # Scan profile UUID to be used in the update command
-scan_profile_uuid = "673cf04cc249a2703d5d8d4b"
+scan_profile_uuid = "your_scan_profile_uuid"
 
 def update_project(uuid, scan_uuid):
     """Executes the endorctl command for a given project UUID and scan profile UUID."""
