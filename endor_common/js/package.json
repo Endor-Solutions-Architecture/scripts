@@ -1,0 +1,9 @@
+{
+  "name": "endor-sdk",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "axios": "^1.6.2",
+    "dotenv": "^16.3.1"
+  }
+} 

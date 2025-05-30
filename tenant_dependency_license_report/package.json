@@ -1,0 +1,13 @@
+{
+  "name": "tenant-dependency-license-report",
+  "version": "1.0.0",
+  "description": "Script to generate dependency license reports for Endor Labs tenants",
+  "main": "script.js",
+  "scripts": {
+    "start": "node script.js"
+  },
+  "dependencies": {
+    "axios": "^1.6.2",
+    "dotenv": "^16.3.1"
+  }
+} 
