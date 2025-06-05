@@ -7,7 +7,7 @@ This script generates a CSV report of all unique dependencies and their licenses
 - Fetches all projects in a namespace
 - Generates SBOM data for each project
 - Extracts unique dependencies and their licenses
-- Exports results to a CSV file
+- Exports results to a timestamped CSV file in the generated_reports directory
 - Supports both API key/secret and token authentication
 
 ## Prerequisites
@@ -23,9 +23,9 @@ This script generates a CSV report of all unique dependencies and their licenses
    ```bash
    cd tenant_dependency_license_report
    ```
-3. Install dependencies:
+3. Build the project (this will install dependencies for both this project and endor_common):
    ```bash
-   npm install
+   npm run build
    ```
 4. Copy the environment template:
    ```bash
@@ -63,30 +63,45 @@ The script supports two authentication methods:
 
 ## Usage
 
-Run the script:
-```bash
-npm start
-```
+You have several options to run the script:
+
+1. After initial setup, run just the script:
+   ```bash
+   npm start
+   ```
+
+2. Build and run in one command (useful after pulling updates):
+   ```bash
+   npm run all
+   ```
 
 The script will:
 1. Authenticate with the Endor Labs API
 2. Fetch all projects in the specified namespace
 3. Generate SBOM data for each project
 4. Extract unique dependencies and their licenses
-5. Create a CSV file named `{namespace}_dependency_license.csv`
+5. Create a directory named `generated_reports` if it doesn't exist
+6. Create a timestamped CSV file named `{namespace}_dependency_license_YYYY-MM-DD-HH-MM-SS.csv` in the generated_reports directory
+
+## Available Commands
+
+- `npm run build` - Installs dependencies for both this project and endor_common
+- `npm start` - Runs the script
+- `npm run all` - Builds the project and runs the script in sequence
 
 ## Output
 
 The generated CSV file contains:
+- Package: Package reference identifier
 - Name: Package name
 - Version: Package version
 - License: License name (or "No License" if not specified)
 
 Example:
 ```
-Name,Version,License
-"axios","1.6.2","MIT"
-"dotenv","16.3.1","BSD-2-Clause"
+Package,Name,Version,License
+"pkg:npm/axios@1.6.2","axios","1.6.2","MIT"
+"pkg:npm/dotenv@16.3.1","dotenv","16.3.1","BSD-2-Clause"
 ```
 
 ## Error Handling

@@ -3,10 +3,12 @@ class SBOM {
         this.client = client;
     }
 
-    async generateSbom(namespace, project) {
+    async generateSbom(project) {
         const payload = {
             meta: {
+                kind: "ExportedSBOM",
                 name: project.meta.name,
+                version: "v1"
             },
             spec: {
                 kind: "SBOM_KIND_CYCLONEDX",
@@ -15,14 +17,16 @@ class SBOM {
                 export_parameters: {
                     project_uuid: project.uuid
                 }
+            },
+            tenant_meta: {
+                namespace: project.tenant_meta.namespace
             }
-
         };
 
 
         return await this.client.request(
             'POST',
-            `/namespaces/${namespace}/sbom-export`,
+            `/namespaces/${project.tenant_meta.namespace}/sbom-export`,
             {},  // no query params
             payload
         );
