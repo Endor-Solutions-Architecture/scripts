@@ -8,16 +8,48 @@ require('dotenv').config();
 const NAMESPACE = process.env.NAMESPACE;
 const REPORTS_DIR = 'generated_reports';
 
-// Helper function to write CSV
-function writeToCSV(dependencies, filename) {
+/**
+ * Consolidate dependencies with findings data
+ * @param {Array} dependencies - List of dependencies
+ * @param {Array} findings - List of processed findings
+ * @returns {Array} Enhanced dependencies with findings data
+ */
+function consolidateDependencyData(dependencies, findings) {
+    // Create a map of findings by name@version for quick lookup
+    const findingsMap = new Map(
+        findings.map(finding => [finding.name_version, finding])
+    );
+
+    return dependencies.map(dep => {
+        const nameVersion = `${dep.name}@${dep.version}`;
+        const finding = findingsMap.get(nameVersion);
+
+        return {
+            ecosystem: dep.ecosystem,
+            name: dep.name,
+            version: dep.version,
+            dependent_packages_count: parseInt(dep.dependent_packages_count) || 0,
+            is_outdated: !!finding,
+            latest_release: finding?.latest_release || null,
+            releases_behind: finding?.releases_behind || null
+        };
+    });
+}
+
+/**
+ * Write enhanced dependency data to CSV
+ * @param {Array} enhancedDependencies - Dependencies with findings data
+ * @param {string} filename - Output filename
+ */
+function writeToCSV(enhancedDependencies, filename) {
     // Create reports directory if it doesn't exist
     if (!fs.existsSync(REPORTS_DIR)) {
         fs.mkdirSync(REPORTS_DIR, { recursive: true });
     }
 
-    const header = 'Ecosystem,Dependency,Version,Dependent Packages\n';
-    const rows = dependencies.map(dep => 
-        `"${dep.ecosystem}","${dep.name}","${dep.version}","${dep.dependent_packages_count}"`
+    const header = 'Ecosystem,Dependency,Version,Dependent Packages,Is Outdated,Latest Release,Releases Behind\n';
+    const rows = enhancedDependencies.map(dep => 
+        `"${dep.ecosystem}","${dep.name}","${dep.version}",${dep.dependent_packages_count},${dep.is_outdated},"${dep.latest_release || ''}",${dep.releases_behind || ''}`
     ).join('\n');
     
     const filepath = path.join(REPORTS_DIR, filename);
@@ -85,18 +117,10 @@ async function main() {
         });
         await sdk.authenticate();
         
-        // // Get dependency metadata
-        // console.log('Fetching dependency metadata...');
-        // const dependencies = await sdk.dependencies.listAllForTenantGrouped(NAMESPACE);
-        // console.log(`Found ${dependencies.length} dependencies. Processing...`);
-        
-        // // Write dependency results to CSV
-        // const timestamp = getFormattedTimestamp();
-        // const filename = `${NAMESPACE}_dependency_versions_${timestamp}.csv`;
-        // writeToCSV(dependencies, filename);
-        
-        // console.log(`\nDependency processing complete. Results written to ${REPORTS_DIR}/${filename}`);
-        // console.log(`Total unique dependencies found: ${dependencies.length}`);
+        // Get dependency metadata
+        console.log('Fetching dependency metadata...');
+        const dependencies = await sdk.dependencies.listAllForTenantGrouped(NAMESPACE);
+        console.log(`Found ${dependencies.length} dependencies. Processing...`);
 
         // Get findings for a specific policy
         console.log('\nFetching findings...');
@@ -109,16 +133,18 @@ async function main() {
         
         const rawFindings = await sdk.findings.listFindings(NAMESPACE, findingsParams);
         const findings = rawFindings.map(processFinding);
-        
         console.log(`Found ${findings.length} findings with the specified policy.`);
-        console.log('\nFindings summary:');
-        findings.forEach(finding => {
-            console.log(`\nDependency: ${finding.dependency_name}`);
-            console.log(`Releases behind: ${finding.releases_behind}`);
-            console.log(`Latest release: ${finding.latest_release}`);
-            console.log(`Project UUID: ${finding.project_uuid}`);
-            console.log(`Relationship: ${finding.relationship}`);
-        });
+
+        // Consolidate data and write to CSV
+        const enhancedDependencies = consolidateDependencyData(dependencies, findings);
+        
+        const timestamp = getFormattedTimestamp();
+        const filename = `${NAMESPACE}_dependency_versions_${timestamp}.csv`;
+        writeToCSV(enhancedDependencies, filename);
+
+        console.log(`\nProcessing complete. Results written to ${REPORTS_DIR}/${filename}`);
+        console.log(`Total unique dependencies found: ${dependencies.length}`);
+        console.log(`Dependencies with outdated versions: ${enhancedDependencies.filter(d => d.is_outdated).length}`);
         
     } catch (error) {
         console.error(`Error: ${error.message}`);
