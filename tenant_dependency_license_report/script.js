@@ -1,4 +1,5 @@
 const EndorSDK = require('../endor_common/js/sdk');
+const { getFormattedTimestamp } = require('../endor_common/js/utils');
 const fs = require('fs');
 const path = require('path');
 require('dotenv').config();
@@ -6,17 +7,6 @@ require('dotenv').config();
 // Configuration
 const NAMESPACE = process.env.NAMESPACE;
 const REPORTS_DIR = 'generated_reports';
-
-// Helper function to get formatted timestamp
-function getFormattedTimestamp() {
-    const now = new Date();
-    return now.toISOString()
-        .replace(/[:.]/g, '-')
-        .replace('T', '-')
-        .split('-')
-        .slice(0, 6)
-        .join('-');
-}
 
 // Helper function to process SBOM components
 function processComponents(components) {

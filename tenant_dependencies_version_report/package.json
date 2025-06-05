@@ -1,0 +1,16 @@
+{
+  "name": "tenant-dependencies-version-report",
+  "version": "1.0.0",
+  "description": "Script to generate dependency version reports for Endor Labs tenants",
+  "main": "script.js",
+  "scripts": {
+    "prebuild": "cd ../endor_common/js && npm install",
+    "build": "npm install",
+    "start": "node script.js",
+    "all": "npm run build && npm start"
+  },
+  "dependencies": {
+    "axios": "^1.6.2",
+    "dotenv": "^16.3.1"
+  }
+} 
