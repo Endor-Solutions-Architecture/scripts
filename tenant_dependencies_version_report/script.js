@@ -15,13 +15,53 @@ function writeToCSV(dependencies, filename) {
         fs.mkdirSync(REPORTS_DIR, { recursive: true });
     }
 
-    const header = 'Ecosystem,Dependency,Version,Dependent Packages Count\n';
+    const header = 'Ecosystem,Dependency,Version,Dependent Packages\n';
     const rows = dependencies.map(dep => 
         `"${dep.ecosystem}","${dep.name}","${dep.version}","${dep.dependent_packages_count}"`
     ).join('\n');
     
     const filepath = path.join(REPORTS_DIR, filename);
     fs.writeFileSync(filepath, header + rows);
+}
+
+/**
+ * Extract release information from summary text using regex
+ * @param {string} summary - The finding summary text
+ * @returns {Object} Object containing releases_behind and latest_release
+ */
+function extractReleaseInfo(summary = '') {
+    const releasesRegex = /(\d+) releases behind/;
+    const latestRegex = /latest release (v\d+\.\d+\.\d+)/i;
+
+    const releasesMatch = summary.match(releasesRegex);
+    const latestMatch = summary.match(latestRegex);
+
+    return {
+        releases_behind: releasesMatch ? parseInt(releasesMatch[1]) : null,
+        latest_release: latestMatch ? latestMatch[1] : null
+    };
+}
+
+/**
+ * Process a finding object to extract relevant information
+ * @param {Object} finding - The finding object from API
+ * @returns {Object} Processed finding data
+ */
+function processFinding(finding) {
+    const releaseInfo = extractReleaseInfo(finding.spec?.summary);
+
+    return {
+        uuid: finding.uuid,
+        summary: finding.spec?.summary,
+        project_uuid: finding.spec?.project_uuid,
+        dependency_name: finding.spec?.target_dependency_name,
+        dependency_version: finding.spec?.target_dependency_version,
+        name_version: `${finding.spec?.target_dependency_name}@${finding.spec?.target_dependency_version}`,
+        relationship: finding.spec?.relationship,
+        context_type: finding.context?.type,
+        context_id: finding.context?.id,
+        ...releaseInfo
+    };
 }
 
 async function main() {
@@ -45,19 +85,40 @@ async function main() {
         });
         await sdk.authenticate();
         
-        // Get dependency metadata
-        console.log('Fetching dependency metadata...');
-        const dependencies = await sdk.dependencies.listAllForTenantGrouped(NAMESPACE);
+        // // Get dependency metadata
+        // console.log('Fetching dependency metadata...');
+        // const dependencies = await sdk.dependencies.listAllForTenantGrouped(NAMESPACE);
+        // console.log(`Found ${dependencies.length} dependencies. Processing...`);
         
-        console.log(`Found ${dependencies.length} dependencies. Processing...`);
+        // // Write dependency results to CSV
+        // const timestamp = getFormattedTimestamp();
+        // const filename = `${NAMESPACE}_dependency_versions_${timestamp}.csv`;
+        // writeToCSV(dependencies, filename);
         
-        // Write results to CSV
-        const timestamp = getFormattedTimestamp();
-        const filename = `${NAMESPACE}_dependency_versions_${timestamp}.csv`;
-        writeToCSV(dependencies, filename);
+        // console.log(`\nDependency processing complete. Results written to ${REPORTS_DIR}/${filename}`);
+        // console.log(`Total unique dependencies found: ${dependencies.length}`);
+
+        // Get findings for a specific policy
+        console.log('\nFetching findings...');
+        const findingsParams = {
+            'list_parameters.mask': 'uuid,spec.project_uuid,spec.summary,spec.target_dependency_name,spec.target_dependency_version,spec.relationship,context.type,context.id',
+            'list_parameters.traverse': 'true',
+            'list_parameters.count': 'false',
+            'list_parameters.filter': '(spec.finding_metadata.source_policy_info.uuid==67eed613ac4c5329347e0764) and context.type == "CONTEXT_TYPE_MAIN"'
+        };
         
-        console.log(`\nProcessing complete. Results written to ${REPORTS_DIR}/${filename}`);
-        console.log(`Total unique dependencies found: ${dependencies.length}`);
+        const rawFindings = await sdk.findings.listFindings(NAMESPACE, findingsParams);
+        const findings = rawFindings.map(processFinding);
+        
+        console.log(`Found ${findings.length} findings with the specified policy.`);
+        console.log('\nFindings summary:');
+        findings.forEach(finding => {
+            console.log(`\nDependency: ${finding.dependency_name}`);
+            console.log(`Releases behind: ${finding.releases_behind}`);
+            console.log(`Latest release: ${finding.latest_release}`);
+            console.log(`Project UUID: ${finding.project_uuid}`);
+            console.log(`Relationship: ${finding.relationship}`);
+        });
         
     } catch (error) {
         console.error(`Error: ${error.message}`);

@@ -29,7 +29,8 @@ class Dependencies {
             package: packageId,
             name: name,
             version: version,
-            ecosystem: protocol
+            ecosystem: protocol,
+            name_version: rest
         }
     }
 
