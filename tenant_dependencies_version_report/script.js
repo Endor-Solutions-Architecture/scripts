@@ -6,6 +6,7 @@ require('dotenv').config();
 
 // Configuration
 const NAMESPACE = process.env.NAMESPACE;
+const OUTDATED_POLICY_UUID = process.env.OUTDATED_POLICY_UUID;
 const REPORTS_DIR = 'generated_reports';
 
 /**
@@ -63,7 +64,7 @@ function writeToCSV(enhancedDependencies, filename) {
  */
 function extractReleaseInfo(summary = '') {
     const releasesRegex = /(\d+) releases behind/;
-    const latestRegex = /latest release (v\d+\.\d+\.\d+)/i;
+    const latestRegex = /latest release ([^\s.]*[0-9][^\s.]*(?:\.[^\s.]+)*|release-\d{4}-\d{2}-\d{2})\./i;
 
     const releasesMatch = summary.match(releasesRegex);
     const latestMatch = summary.match(latestRegex);
@@ -108,6 +109,11 @@ async function main() {
         process.exit(1);
     }
 
+    if (!OUTDATED_POLICY_UUID) {
+        console.error('Error: OUTDATED_POLICY_UUID must be set in .env file');
+        process.exit(1);
+    }
+
     try {
         // Initialize SDK with options
         const sdk = new EndorSDK({
@@ -128,7 +134,7 @@ async function main() {
             'list_parameters.mask': 'uuid,spec.project_uuid,spec.summary,spec.target_dependency_name,spec.target_dependency_version,spec.relationship,context.type,context.id',
             'list_parameters.traverse': 'true',
             'list_parameters.count': 'false',
-            'list_parameters.filter': '(spec.finding_metadata.source_policy_info.uuid==67eed613ac4c5329347e0764) and context.type == "CONTEXT_TYPE_MAIN"'
+            'list_parameters.filter': `(spec.finding_metadata.source_policy_info.uuid==${OUTDATED_POLICY_UUID}) and context.type == "CONTEXT_TYPE_MAIN"`
         };
         
         const rawFindings = await sdk.findings.listFindings(NAMESPACE, findingsParams);

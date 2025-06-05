@@ -19,12 +19,31 @@ class Dependencies {
 
     /**
      * Extracts package information from a package identifier string
-     * @param {string} packageId - Package identifier (e.g., "gem://activesupport@3.2.21")
-     * @returns {Object} Object containing package, name, and version
+     * @param {string} packageId - Package identifier (e.g., "npm://@ampproject/remapping@2.3.0" or "npm://strip-bom@https://registry.npmjs.org/strip-bom/-/strip-bom-1.0.0.tgz")
+     * @returns {Object} Object containing package, name, version, and ecosystem
      */
     _parsePackageId(packageId) {
-        const [protocol, rest] = packageId.split('://')
-        const [name, version] = rest.split('@')
+        // Find the first occurrence of :// to get the protocol
+        const protocolIndex = packageId.indexOf('://');
+        if (protocolIndex === -1) {
+            throw new Error(`Invalid package identifier (no protocol): ${packageId}`);
+        }
+
+        const protocol = packageId.substring(0, protocolIndex);
+        const rest = packageId.substring(protocolIndex + 3);
+
+        // Find the first @ that's not part of the scope
+        const isScoped = rest.startsWith('@');
+        const startSearchIndex = isScoped ? rest.indexOf('/', 1) : 0;
+        const versionIndex = rest.indexOf('@', startSearchIndex);
+
+        if (versionIndex === -1) {
+            throw new Error(`Invalid package identifier (no version): ${packageId}`);
+        }
+
+        const name = rest.substring(0, versionIndex);
+        const version = rest.substring(versionIndex + 1);
+
         return {
             package: packageId,
             name: name,
