@@ -1,0 +1,15 @@
+{
+  "name": "tenant_dependencies_version_report",
+  "version": "1.0.0",
+  "description": "Generate a report of all dependencies and their versions across all projects in a tenant",
+  "main": "script.js",
+  "scripts": {
+    "start": "node script.js",
+    "build": "npm install && cd ../endor_common/js && npm install",
+    "all": "npm run build && npm start"
+  },
+  "dependencies": {
+    "dotenv": "^16.0.3",
+    "yargs": "^17.7.2"
+  }
+} 

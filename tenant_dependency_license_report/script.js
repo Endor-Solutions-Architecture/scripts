@@ -1,20 +1,24 @@
 const EndorSDK = require('../endor_common/js/sdk');
+const { getFormattedTimestamp } = require('../endor_common/js/utils');
 const fs = require('fs');
+const path = require('path');
 require('dotenv').config();
 
 // Configuration
 const NAMESPACE = process.env.NAMESPACE;
+const REPORTS_DIR = 'generated_reports';
 
 // Helper function to process SBOM components
 function processComponents(components) {
     const uniqueComponents = new Map();
     
     components.forEach(component => {
-        const key = `${component.name}|${component.version}`;
+        const bomRef = component["bom-ref"];
         const license = component.licenses?.[0]?.license?.name || 'No License';
         
-        uniqueComponents.set(key, {
+        uniqueComponents.set(bomRef, {
             name: component.name,
+            package: bomRef,
             version: component.version,
             license: license
         });
@@ -25,12 +29,18 @@ function processComponents(components) {
 
 // Helper function to write CSV
 function writeToCSV(components, filename) {
-    const header = 'Name,Version,License\n';
+    // Create reports directory if it doesn't exist
+    if (!fs.existsSync(REPORTS_DIR)) {
+        fs.mkdirSync(REPORTS_DIR, { recursive: true });
+    }
+
+    const header = 'Package,Name,Version,License\n';
     const rows = components.map(comp => 
-        `"${comp.name}","${comp.version}","${comp.license}"`
+        `"${comp.package}","${comp.name}","${comp.version}","${comp.license}"`
     ).join('\n');
     
-    fs.writeFileSync(filename, header + rows);
+    const filepath = path.join(REPORTS_DIR, filename);
+    fs.writeFileSync(filepath, header + rows);
 }
 
 async function main() {
@@ -68,7 +78,7 @@ async function main() {
         for (const project of projects) {
             try {
                 console.log(`Processing project: ${project.meta.name} (${++processedProjects}/${projects.length})`);
-                const sbomResponse = await sdk.sbom.generateSbom(NAMESPACE, project);
+                const sbomResponse = await sdk.sbom.generateSbom(project);
                 
                 if (sbomResponse.spec?.data) {
                     try {
@@ -90,10 +100,11 @@ async function main() {
         }
         
         // Write results to CSV
-        const filename = `${NAMESPACE}_dependency_license.csv`;
+        const timestamp = getFormattedTimestamp();
+        const filename = `${NAMESPACE}_dependency_license_${timestamp}.csv`;
         writeToCSV(Array.from(allComponents.values()), filename);
         
-        console.log(`\nProcessing complete. Results written to ${filename}`);
+        console.log(`\nProcessing complete. Results written to ${REPORTS_DIR}/${filename}`);
         console.log(`Total unique dependencies found: ${allComponents.size}`);
         
     } catch (error) {
