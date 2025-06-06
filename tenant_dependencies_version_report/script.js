@@ -2,7 +2,33 @@ const EndorSDK = require('../endor_common/js/sdk');
 const { getFormattedTimestamp } = require('../endor_common/js/utils');
 const fs = require('fs');
 const path = require('path');
+const yargs = require('yargs/yargs');
+const { hideBin } = require('yargs/helpers');
 require('dotenv').config();
+
+// Parse command line arguments
+const argv = yargs(hideBin(process.argv))
+    .option('project-uuid', {
+        alias: 'p',
+        type: 'string',
+        description: 'Project UUID to analyze'
+    })
+    .option('branch-name', {
+        alias: 'b',
+        type: 'string',
+        description: 'Branch name to analyze'
+    })
+    .help()
+    .argv;
+
+const PROJECT_UUID = argv['project-uuid'] || null;
+const BRANCH = argv['branch-name'] || null;
+
+// Validate branch parameter
+if (BRANCH && !PROJECT_UUID) {
+    console.error('Error: --branch-name can only be used when --project-uuid is specified');
+    process.exit(1);
+}
 
 // Configuration
 const NAMESPACE = process.env.NAMESPACE;
@@ -97,6 +123,26 @@ function processFinding(finding) {
     };
 }
 
+/**
+ * Build the findings filter based on parameters
+ * @param {string} policyUuid - The policy UUID to filter by
+ * @param {string|null} projectUuid - Optional project UUID
+ * @param {string|null} branch - Optional branch name
+ * @returns {string} The complete filter string
+ */
+function buildFindingsFilter(policyUuid, projectUuid, branch) {
+    if (projectUuid && branch) {
+        // Project and branch specific filter
+        return `spec.project_uuid==${projectUuid} and context.type == CONTEXT_TYPE_REF and context.id==${branch} and spec.finding_metadata.source_policy_info.uuid==${policyUuid} and spec.finding_tags not contains [FINDING_TAGS_EXCEPTION]`;
+    } else if (projectUuid) {
+        // Project specific filter
+        return `spec.project_uuid==${projectUuid} and context.type == CONTEXT_TYPE_MAIN and spec.finding_metadata.source_policy_info.uuid==${policyUuid} and spec.finding_tags not contains [FINDING_TAGS_EXCEPTION]`;
+    } else {
+        // Tenant-wide filter
+        return `(spec.finding_metadata.source_policy_info.uuid==${policyUuid}) and context.type == "CONTEXT_TYPE_MAIN" and spec.finding_tags not contains [FINDING_TAGS_EXCEPTION]`;
+    }
+}
+
 async function main() {
     // Validate environment variables
     if (!process.env.API_TOKEN && (!process.env.API_KEY || !process.env.API_SECRET)) {
@@ -125,16 +171,23 @@ async function main() {
         
         // Get dependency metadata
         console.log('Fetching dependency metadata...');
-        const dependencies = await sdk.dependencies.listAllForTenantGrouped(NAMESPACE);
+        let dependencies;
+        if (PROJECT_UUID) {
+            console.log(`Fetching dependencies for project ${PROJECT_UUID}${BRANCH ? ` (branch: ${BRANCH})` : ''}...`);
+            dependencies = await sdk.dependencies.listAllForProjectGrouped(NAMESPACE, PROJECT_UUID, BRANCH);
+        } else {
+            console.log('Fetching dependencies for entire tenant...');
+            dependencies = await sdk.dependencies.listAllForTenantGrouped(NAMESPACE);
+        }
         console.log(`Found ${dependencies.length} dependencies. Processing...`);
 
         // Get findings for a specific policy
         console.log('\nFetching findings...');
         const findingsParams = {
-            'list_parameters.mask': 'uuid,spec.project_uuid,spec.summary,spec.target_dependency_name,spec.target_dependency_version,spec.relationship,context.type,context.id',
+            'list_parameters.mask': 'uuid,spec.project_uuid,spec.summary,spec.target_dependency_name,spec.target_dependency_version,spec.relationship,context.type,context.id,meta',
             'list_parameters.traverse': 'true',
             'list_parameters.count': 'false',
-            'list_parameters.filter': `(spec.finding_metadata.source_policy_info.uuid==${OUTDATED_POLICY_UUID}) and context.type == "CONTEXT_TYPE_MAIN"`
+            'list_parameters.filter': buildFindingsFilter(OUTDATED_POLICY_UUID, PROJECT_UUID, BRANCH)
         };
         
         const rawFindings = await sdk.findings.listFindings(NAMESPACE, findingsParams);
@@ -145,7 +198,16 @@ async function main() {
         const enhancedDependencies = consolidateDependencyData(dependencies, findings);
         
         const timestamp = getFormattedTimestamp();
-        const filename = `${NAMESPACE}_dependency_versions_${timestamp}.csv`;
+        let filePrefix;
+        if (PROJECT_UUID) {
+            // For project-specific reports
+            const branchPart = BRANCH || 'main';
+            filePrefix = `${NAMESPACE}_${PROJECT_UUID}_${branchPart}`;
+        } else {
+            // For tenant-wide reports
+            filePrefix = NAMESPACE;
+        }
+        const filename = `${filePrefix}_dependency_versions_${timestamp}.csv`;
         writeToCSV(enhancedDependencies, filename);
 
         console.log(`\nProcessing complete. Results written to ${REPORTS_DIR}/${filename}`);

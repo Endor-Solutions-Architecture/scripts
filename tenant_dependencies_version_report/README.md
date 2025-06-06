@@ -1,14 +1,15 @@
 # Tenant Dependencies Version Report
 
-This script generates a CSV report of all unique dependencies and their versions across all projects in a specified namespace using the Endor Labs API. It also identifies outdated dependencies based on findings from a specific policy.
+This script generates a CSV report of all unique dependencies and their versions across all projects in a specified namespace using the Endor Labs API. It also identifies outdated dependencies based on findings from a specific policy. The script can analyze either the entire tenant or a specific project.
 
 ## Features
 
-- Fetches dependency metadata for the namespace
+- Fetches dependency metadata for the namespace or specific project
 - Identifies outdated dependencies using policy findings
 - Extracts dependency versions and update information
 - Exports results to a timestamped CSV file in the generated_reports directory
 - Supports both API key/secret and token authentication
+- Supports project-specific analysis with optional branch filtering
 
 ## Prerequisites
 
@@ -49,54 +50,57 @@ This script generates a CSV report of all unique dependencies and their versions
    OUTDATED_POLICY_UUID=your_policy_uuid_here
    ```
 
-## Required Environment Variables
-
-- `API_TOKEN` or (`API_KEY` and `API_SECRET`): For authentication
-- `NAMESPACE`: The namespace to analyze
-- `OUTDATED_POLICY_UUID`: UUID of the policy that identifies outdated dependencies
-
-## Authentication Methods
-
-The script supports two authentication methods:
-
-1. **API Token**
-   - Provide a pre-generated API token in the .env file
-   - Token is used directly for API calls
-   - Useful when you already have a valid token
-   - Takes precedence over API key/secret if both are provided
-
-2. **API Key and Secret**
-   - Provide both API key and secret in the .env file
-   - Script automatically generates a token
-   - Used as fallback when no API token is provided
-
 ## Usage
+
+The script supports the following command-line options:
+
+- `--project-uuid, -p`: Project UUID to analyze (optional)
+- `--branch-name, -b`: Branch name to analyze (requires --project-uuid)
+- `--help`: Show help menu
 
 You have several options to run the script:
 
-1. After initial setup, run just the script:
+1. Analyze entire tenant:
    ```bash
    npm start
    ```
 
-2. Build and run in one command (useful after pulling updates):
+2. Analyze specific project:
    ```bash
-   npm run all
+   npm start -- --project-uuid your_project_uuid
+   # or using the short form
+   npm start -- -p your_project_uuid
+   ```
+
+3. Analyze specific project with branch:
+   ```bash
+   npm start -- --project-uuid your_project_uuid --branch-name your_branch
+   # or using the short form
+   npm start -- -p your_project_uuid -b your_branch
+   ```
+
+4. Build and run in one command:
+   ```bash
+   # Any of the above commands can be used with npm run all
+   npm run all -- --project-uuid your_project_uuid --branch-name your_branch
    ```
 
 The script will:
 1. Authenticate with the Endor Labs API
-2. Fetch dependency metadata for the namespace
+2. Fetch dependency metadata (for tenant or specific project)
 3. Fetch findings for outdated dependencies
 4. Process and combine the data
 5. Create a directory named `generated_reports` if it doesn't exist
-6. Create a timestamped CSV file named `{namespace}_dependency_versions_YYYY-MM-DD-HH-MM-SS.csv` in the generated_reports directory
+6. Create a timestamped CSV file with the pattern:
+   - Tenant-wide: `{namespace}_dependency_versions_YYYY-MM-DD-HH-MM-SS.csv`
+   - Project without branch: `{namespace}_{project_uuid}_main_dependency_versions_YYYY-MM-DD-HH-MM-SS.csv`
+   - Project with branch: `{namespace}_{project_uuid}_{branch_name}_dependency_versions_YYYY-MM-DD-HH-MM-SS.csv`
 
 ## Available Commands
 
 - `npm run build` - Installs dependencies for both this project and endor_common
-- `npm start` - Runs the script
-- `npm run all` - Builds the project and runs the script in sequence
+- `npm start [-- options]` - Runs the script with optional parameters
+- `npm run all [-- options]` - Builds the project and runs the script in sequence
 
 ## Output
 

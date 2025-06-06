@@ -3,17 +3,14 @@
  */
 
 /**
- * Returns a formatted timestamp string in the format YYYY-MM-DD-HH-MM-SS
+ * Returns a formatted timestamp string in the format YYYY-MM-DD-HH-MM-SS using local time
  * @returns {string} Formatted timestamp
  */
 function getFormattedTimestamp() {
     const now = new Date();
-    return now.toISOString()
-        .replace(/[:.]/g, '-')
-        .replace('T', '-')
-        .split('-')
-        .slice(0, 6)
-        .join('-');
+    const pad = (num) => String(num).padStart(2, '0');
+    
+    return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}-${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}`;
 }
 
 module.exports = {

@@ -54,19 +54,21 @@ class Dependencies {
     }
 
     /**
-     * List all dependencies for a tenant with grouping, returning processed results
+     * List and process dependencies with grouping
      * @param {string} namespace - The namespace to list dependencies for
+     * @param {Object} params - Query parameters for the API request
      * @returns {Promise<Array>} Array of processed dependency objects
+     * @private
      */
-    async listAllForTenantGrouped(namespace) {
-        const params = {
-            'list_parameters.filter': 'context.type in ["CONTEXT_TYPE_MAIN","CONTEXT_TYPE_SBOM"]',
+    async _listAndProcessDependencies(namespace, params) {
+        const baseParams = {
             'list_parameters.traverse': 'true',
             'list_parameters.count': 'false',
-            'list_parameters.group.aggregation_paths': 'meta.name'
+            'list_parameters.group.aggregation_paths': 'meta.name',
+            ...params
         };
 
-        const response = await this.listDependencies(namespace, params);
+        const response = await this.listDependencies(namespace, baseParams);
         const groups = response.group_response?.groups || {};
         
         return Object.entries(groups).map(([key, value]) => {
@@ -78,6 +80,33 @@ class Dependencies {
                 ...packageInfo,
                 dependent_packages_count: value.aggregation_count?.count || 0
             };
+        });
+    }
+
+    /**
+     * List all dependencies for a tenant with grouping, returning processed results
+     * @param {string} namespace - The namespace to list dependencies for
+     * @returns {Promise<Array>} Array of processed dependency objects
+     */
+    async listAllForTenantGrouped(namespace) {
+        return await this._listAndProcessDependencies(namespace, {
+            'list_parameters.filter': 'context.type in ["CONTEXT_TYPE_MAIN","CONTEXT_TYPE_SBOM"]'
+        });
+    }
+
+    /**
+     * List all dependencies for a specific project
+     * @param {string} namespace - The namespace to list dependencies for
+     * @param {string} project_uuid - The project UUID to filter by
+     * @param {string} branch - Optional branch parameter
+     * @returns {Promise<Array>} Array of processed dependency objects
+     */
+    async listAllForProjectGrouped(namespace, project_uuid, branch) {
+        const context_type = branch ? '[CONTEXT_TYPE_MAIN,CONTEXT_TYPE_REF]' : '[CONTEXT_TYPE_MAIN]';
+        return await this._listAndProcessDependencies(namespace, {
+            'list_parameters.group.aggregation_paths': 'meta.name',
+            // 'list_parameters.filter': `spec.importer_data.project_uuid=="682cbadc6ca8b05216d995bf" and context.type in ["CONTEXT_TYPE_MAIN"]`
+            'list_parameters.filter': `spec.importer_data.project_uuid==${project_uuid} and context.type in ${context_type}`
         });
     }
 }
