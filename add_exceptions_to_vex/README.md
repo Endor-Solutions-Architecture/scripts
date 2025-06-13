@@ -96,6 +96,59 @@ vex_export_YYYYMMDD_HHMMSS.json
 
 The output follows the CycloneDX VEX JSON format, enriched with analysis information from your Endor Labs exception policies.
 
+## Tagging Exception Policies for VEX Output
+
+To enrich your VEX documents with detailed analysis, justification, and response information, you can add tags to your Endor Labs exception policies. These tags are automatically extracted and mapped to the appropriate fields in the VEX output by this tool.
+
+### How Tags Are Used
+- **Justification tags** (e.g., `code_not_present`, `code_not_reachable`, `requires_configuration`, etc.) are mapped to the `justification` field in the VEX `analysis` section.
+- **Response tags** (e.g., `can_not_fix`, `will_not_fix`, `update`, `rollback`, `workaround_available`) are mapped to the `response` field in the VEX `analysis` section.
+- Tags must match the expected values to be included in the VEX output.
+
+### Mapping: Endor Exception Reason → VEX Impact Analysis State
+The `Reason` field in your Endor Labs exception policy is mapped to the `state` field in the VEX `analysis` section as follows:
+
+| Endor Exception Reason                | VEX Impact Analysis State | Description                                                                 |
+|---------------------------------------|--------------------------|-----------------------------------------------------------------------------|
+| EXCEPTION_REASON_UNSPECIFIED          | in_triage                | The finding is under review or not otherwise specified.                      |
+| EXCEPTION_REASON_FALSE_POSITIVE       | false_positive           | The finding is determined to be a false positive.                            |
+| EXCEPTION_REASON_RISK_ACCEPTED        | exploitable              | The risk is accepted; the vulnerability is considered exploitable.           |
+| EXCEPTION_REASON_IN_TRIAGE            | in_triage                | The finding is still being triaged for more information.                     |
+| EXCEPTION_REASON_OTHER                | in_triage                | Other/unspecified reason; treated as in triage.                              |
+| EXCEPTION_REASON_RESOLVED             | resolved                 | The issue has been resolved.                                                 |
+
+These states are set automatically in the VEX output based on the reason you select when creating or editing an exception policy in Endor Labs.
+
+### Adding Tags to Exception Policies
+1. **Sign in to Endor Labs** and go to **Policies & Rules** > **Exception Policies** ([see official docs](https://docs.endorlabs.com/managing-policies/exception-policies/)).
+2. Create or edit an exception policy.
+3. In the policy editor, add your desired tags in the **Policy Tags** field.
+4. Save the policy. The tags will be included in the policy metadata and picked up by this tool on the next VEX export.
+
+#### Example: Adding a Justification Tag
+- To indicate that a vulnerability is not present in your code, add the tag `code_not_present` to your exception policy.
+- To indicate a response action, such as that a fix is not possible, add the tag `will_not_fix`.
+
+#### List of Supported Tags
+- **Justification tags:**
+  - `code_not_present`
+  - `code_not_reachable`
+  - `requires_configuration`
+  - `requires_dependency`
+  - `requires_environment`
+  - `protected_by_compiler`
+  - `protected_at_runtime`
+  - `protected_at_perimeter`
+  - `protected_by_mitigating_control`
+- **Response tags:**
+  - `can_not_fix`
+  - `will_not_fix`
+  - `update`
+  - `rollback`
+  - `workaround_available`
+
+For more details, see the [Endor Labs Exception Policies documentation](https://docs.endorlabs.com/managing-policies/exception-policies/).
+
 ## Error Handling
 
 The script includes comprehensive error handling for:
