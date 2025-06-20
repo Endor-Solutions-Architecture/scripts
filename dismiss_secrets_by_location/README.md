@@ -118,7 +118,7 @@ CSV Format:
 4. **Filter & Match**: For each secret:
    - Extracts secret locations from `spec.finding_metadata.source_policy_info.results`
    - Checks if any secret location contains any location from the file
-   - If match found, marks for dismissal
+   - If match found, set finding `spec.dismiss=true` and add `FINDING_TAGS_EXCEPTION` to `spec.finding_tags`
 5. **Dismiss**: In non-dry-run mode, calls Endor Labs API to dismiss matching secrets
 6. **Log**: Records all dismissed secrets to CSV file
 
