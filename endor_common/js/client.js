@@ -31,18 +31,18 @@ class EndorClient {
             key: this.apiKey,
             secret: this.apiSecret
         };
-        
+
         const headers = {
             'Content-Type': 'application/json',
             'Request-Timeout': '60'
         };
 
         try {
-            const response = await axios.post(url, payload, { 
-                headers, 
-                timeout: 60000 
+            const response = await axios.post(url, payload, {
+                headers,
+                timeout: 60000
             });
-            
+
             if (response.status === 200) {
                 this.token = response.data.token;
                 this.headers = {
@@ -71,7 +71,7 @@ class EndorClient {
                 headers: this.headers,
                 params,
                 data,
-                timeout: 60000
+                timeout: 300000
             });
             return response.data;
         } catch (error) {
@@ -80,4 +80,4 @@ class EndorClient {
     }
 }
 
-module.exports = EndorClient; 
+module.exports = EndorClient;
