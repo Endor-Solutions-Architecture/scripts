@@ -24,7 +24,7 @@ python main.py -n <namespace> --persist <true|false>
 
 ### Parameters
 
-- **-n, --namespace**: The namespace/tenant to process (e.g., "avalara.global-ui")
+- **-n, --namespace**: The namespace/tenant to process (e.g., "namespace.global-ui")
 - **--persist**: Either "true" or "false"
   - `false`: Dry run mode - generates CSV but doesn't delete anything
   - `true`: Actually deletes the scan requests
@@ -33,17 +33,17 @@ python main.py -n <namespace> --persist <true|false>
 
 **Dry run (safe mode):**
 ```bash
-python main.py -n "avalara.global-ui" --persist false
+python main.py -n "namespace.global-ui" --persist false
 ```
 
 **Actual deletion:**
 ```bash
-python main.py -n "avalara.global-ui" --persist true
+python main.py -n "namespace.global-ui" --persist true
 ```
 
 **Alternative long form:**
 ```bash
-python main.py --namespace "avalara.global-ui" --persist true
+python main.py --namespace "namespace.global-ui" --persist true
 ```
 
 ## What the Script Does
@@ -113,18 +113,18 @@ These are typically the monitoring scans that Endor Labs Apps initiate every 24 
 
 ```
 Starting scan request purge process
-Tenant: avalara.global-ui
+Tenant: namespace.global-ui
 Persist mode: true
 --------------------------------------------------
-Counting queued on-premise scan requests in namespace: avalara.global-ui
+Counting queued on-premise scan requests in namespace: namespace.global-ui
 Found 25 queued on-premise scan requests
-Retrieving queued on-premise scan requests from namespace: avalara.global-ui
+Retrieving queued on-premise scan requests from namespace: namespace.global-ui
 Retrieved 25 scan request objects
-Deleting Scan Request with Id 68a24c593861cb0b9bf36c19 from namespace avalara.global-ui, installation_uuid: 6895a498c1bced1da4975757
+Deleting Scan Request with Id 68a24c593861cb0b9bf36c19 from namespace namespace.global-ui, installation_uuid: 6895a498c1bced1da4975757
   Success: true
 ...
 
-Results written to: purge_scans_tenant_avalara.global-ui_20241201_143022.csv
+Results written to: purge_scans_tenant_namespace.global-ui_20241201_143022.csv
 
 Summary:
   Total scan requests processed: 25
