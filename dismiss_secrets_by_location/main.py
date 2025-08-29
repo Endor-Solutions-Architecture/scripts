@@ -46,8 +46,8 @@ def get_endor_token() -> str:
         print(f"Error getting token from API: {e}")
         sys.exit(1)
 
-class SecretDismisser:
-    """Handles dismissing secrets in Endor Labs given a set of locations."""
+class SecretExcepter:
+    """Handles Excepting secrets in Endor Labs given a set of locations."""
     
     def __init__(self, namespace: str, debug: bool = False, dry_run: bool = True, project_uuid: str = None, locations_file: str = None):
         self.namespace = namespace
@@ -57,6 +57,7 @@ class SecretDismisser:
         self.locations_file = locations_file
         self.locations = []
         self.base_url = "https://api.endorlabs.com"
+        self.policy_name = "Scripted Secret Exceptions - Do Not Modify"
         
         # Get authentication token
         self.token = get_endor_token()
@@ -64,9 +65,9 @@ class SecretDismisser:
         # Load locations from file if provided
         self.locations = self._load_locations_from_file() if locations_file else []
         
-        # Create log file for dismissed secrets
+        # Create log file for Excepted secrets
         epoch_time = str(int(time.time()))
-        self.log_file = f"dismiss_secrets_by_location.dismissed.{epoch_time}.log"
+        self.log_file = f"Except_secrets_by_location.excepted.{epoch_time}.log"
         
         # Write CSV header to log file
         try:
@@ -158,10 +159,10 @@ class SecretDismisser:
             print(f"Error loading locations from {self.locations_file}: {e}")
             return []
     
-    def _should_dismiss_secret(self, secret: Dict[str, Any]) -> bool:
-        """Check if a secret should be dismissed based on its locations."""
+    def _should_except_secret(self, secret: Dict[str, Any]) -> bool:
+        """Check if a secret should be Excepted based on its locations."""
         if not self.locations:
-            # If no locations file provided, dismiss all secrets
+            # If no locations file provided, Except all secrets
             return True
         
         try:
@@ -194,8 +195,8 @@ class SecretDismisser:
         except (KeyError, TypeError):
             return "Error"
 
-    def _log_dismissed_secret(self, secret: Dict[str, Any]) -> None:
-        """Log a dismissed secret to the log file in CSV format."""
+    def _log_Excepted_secret(self, secret: Dict[str, Any]) -> None:
+        """Log a Excepted secret to the log file in CSV format."""
         try:
             matched_location = self._get_matched_location(secret)
             # Extract namespace from tenant_meta
@@ -211,10 +212,165 @@ class SecretDismisser:
                 f.write(f'"{namespace}","{secret_uuid}","{description}","{matched_location}"\n')
         except Exception as e:
             if self.debug:
-                print(f"Error logging dismissed secret: {e}")
+                print(f"Error logging Excepted secret: {e}")
 
-    def dismiss_secret(self, secret_finding: Dict[str, Any]) -> bool:
-        """Dismiss a secret finding."""
+    def _collect_exception_locations(self, secrets: List[Dict[str, Any]]) -> List[str]:
+        """Collect unique 'Secret Location' values from secrets that should be excepted."""
+        unique_locations: List[str] = []
+        seen = set()
+        for secret in secrets:
+            if not self._should_except_secret(secret):
+                continue
+            try:
+                results = secret['spec']['finding_metadata']['source_policy_info']['results']
+                for result in results:
+                    secret_location = result['fields']['Secret Location']
+                    if (not self.locations) or any(loc in secret_location for loc in self.locations):
+                        if secret_location not in seen:
+                            seen.add(secret_location)
+                            unique_locations.append(secret_location)
+            except (KeyError, TypeError):
+                continue
+        return unique_locations
+
+    def _build_rule(self, locations: List[str]) -> str:
+        """Build the Rego rule string containing provided locations array."""
+        if not locations:
+            locations_block = "locations := []"
+        else:
+            # Escape quotes inside each location string for Rego
+            escaped = [loc.replace('"', '\\"') for loc in locations]
+            # Join with proper formatting
+            lines = []
+            for idx, loc in enumerate(escaped):
+                comma = "," if idx < len(escaped) - 1 else ""
+                lines.append(f'    "{loc}"{comma}')
+            locations_block = "locations := [\n" + "\n".join(lines) + " ]"
+        rule = (
+            "package main\n\n"
+            "exclude_by_location[result] {\n"
+            "  some i\n"
+            "  data.resources.Finding[i].spec.finding_categories[_] == \"FINDING_CATEGORY_SECRETS\"\n"
+            f"  {locations_block}\n"
+            "  locations[_] == data.resources.Finding[i].spec.finding_metadata.source_policy_info.results[_].fields[\"Secret Location\"] \n\n"
+            "  result = {\n"
+            "    \"Endor\" : {\n"
+            "      \"Finding\" : data.resources.Finding[i].uuid\n"
+            "    }\n"
+            "  }\n"
+            "}"
+        )
+        return rule
+
+    def _get_policy_by_name(self) -> Optional[Dict[str, Any]]:
+        """Return existing policy dict by name if found, else None."""
+        try:
+            headers = {
+                "Authorization": f"Bearer {self.token}",
+                "Content-Type": "application/json"
+            }
+            url = f"{self.base_url}/v1/namespaces/{self.namespace}/policies"
+            params = {
+                "list_parameters.filter": f"meta.name==\"{self.policy_name}\"",
+                "list_parameters.page_size": 1
+            }
+            response = requests.get(url, headers=headers, params=params)
+            if self.debug:
+                print(f"Lookup policy response: {response.status_code}")
+            if response.status_code != 200:
+                if self.debug:
+                    print(f"Policy lookup error: {response.text}")
+                return None
+            data = response.json()
+            objs = data.get('list', {}).get('objects', [])
+            return objs[0] if objs else None
+        except Exception as e:
+            if self.debug:
+                print(f"Error looking up policy: {e}")
+            return None
+
+    def _create_policy(self, rule: str) -> bool:
+        """Create a new exception policy with the provided rule."""
+        try:
+            headers = {
+                "Authorization": f"Bearer {self.token}",
+                "Content-Type": "application/json"
+            }
+            url = f"{self.base_url}/v1/namespaces/{self.namespace}/policies"
+            payload = {
+                    "meta": {
+                        "description": "Exception Policy created by script",
+                        "name": self.policy_name,
+                        "tags": []
+                    },
+                    "propagate": True,
+                    "spec": {
+                        "exception": {"reason": "EXCEPTION_REASON_OTHER"},
+                        "disable": False,
+                        "policy_type": "POLICY_TYPE_EXCEPTION",
+                        "project_exceptions": [],
+                        "project_selector": [],
+                        "query_statements": ["data.main.exclude_by_location"],
+                        "resource_kinds": ["Finding"],
+                        "rule": rule,
+                        "template_values": {}
+                    }
+                }
+            
+            if self.debug:
+                print("Creating exception policy with payload:")
+                print(json.dumps(payload, indent=2))
+            response = requests.post(url, headers=headers, json=payload)
+            if response.status_code in (200, 201):
+                if self.debug:
+                    print("Policy created successfully")
+                return True
+            print(f"Error creating policy: {response.status_code} - {response.text}")
+            return False
+        except Exception as e:
+            print(f"Error creating policy: {e}")
+            return False
+
+    def _update_policy_rule(self, policy_uuid: str, rule: str) -> bool:
+        """Update an existing policy's spec.rule using update_mask."""
+        try:
+            headers = {
+                "Authorization": f"Bearer {self.token}",
+                "Content-Type": "application/json"
+            }
+            url = f"{self.base_url}/v1/namespaces/{self.namespace}/policies"
+            payload = {
+                "request": {
+                    "update_mask": "meta.name,spec.rule,spec.policy_type"
+                },
+                "object": {
+                    "uuid": policy_uuid,
+                    "meta": {
+                        "name": self.policy_name,
+                    },
+                    "spec": {
+                        "rule": rule,
+                        "policy_type": "POLICY_TYPE_EXCEPTION",
+
+                    }
+                }
+            }
+            if self.debug:
+                print("Updating exception policy with payload:")
+                print(json.dumps(payload, indent=2))
+            response = requests.patch(url, headers=headers, json=payload)
+            if response.status_code == 200:
+                if self.debug:
+                    print("Policy updated successfully")
+                return True
+            print(f"Error updating policy: {response.status_code} - {response.text}")
+            return False
+        except Exception as e:
+            print(f"Error updating policy: {e}")
+            return False
+
+    def except_secret(self, secret_finding: Dict[str, Any]) -> bool:
+        """Except a secret finding."""
         try:
             headers = {
                 "Authorization": f"Bearer {self.token}",
@@ -225,7 +381,7 @@ class SecretDismisser:
             
             payload = {
                 "request": {
-                    "update_mask": "spec.dismiss,spec.finding_tags"
+                    "update_mask": "spec.Except,spec.finding_tags"
                 },
                 "object": {
                     "uuid": secret_finding['uuid'],
@@ -240,7 +396,7 @@ class SecretDismisser:
             }
             
             if self.debug:
-                print(f"Dismissing secret {secret_finding['uuid']}")
+                print(f"Excepting secret {secret_finding['uuid']}")
                 print(f"URL: {url}")
                 print(f"Payload: {json.dumps(payload, indent=2)}")
             
@@ -248,23 +404,23 @@ class SecretDismisser:
             
             if response.status_code == 200:
                 if self.debug:
-                    print(f"Successfully dismissed secret {secret_finding['uuid']}")
+                    print(f"Successfully Excepted secret {secret_finding['uuid']}")
                 return True
             else:
-                print(f"Error dismissing secret {secret_finding['uuid']}: {response.status_code} - {response.text}")
+                print(f"Error Excepting secret {secret_finding['uuid']}: {response.status_code} - {response.text}")
                 return False
                 
         except Exception as e:
-            print(f"Error dismissing secret {secret_finding['uuid']}: {e}")
+            print(f"Error Excepting secret {secret_finding['uuid']}: {e}")
             return False
 
     def run(self) -> int:
         """Main execution method."""
-        print(f"Starting secrets dismissal for namespace: {self.namespace}")
-        print(f"Dismissed secrets will be logged to: {self.log_file}")
+        print(f"Starting secrets Exception script for namespace: {self.namespace}")
+        print(f"Excepted secrets will be logged to: {self.log_file}")
         
         if self.dry_run:
-            print("\n**** DRY RUN MODE  (use --no-dry-run to apply dismissal in Endor Labs) ****\n")
+            print("\n**** DRY RUN MODE  (use --no-dry-run to apply Exception Policy in Endor Labs) ****\n")
         
         # Get all projects
         secrets = self.get_secrets()
@@ -274,37 +430,69 @@ class SecretDismisser:
         
         print(f"Found {len(secrets)} secrets findings to process")
         
-        # Update each project
+        # Decide which secrets to include and collect locations
+        exception_locations = self._collect_exception_locations(secrets)
+        print(f"Collected {len(exception_locations)} unique 'Secret Location' values for exception policy")
+
+        # Build rule
+        rule = self._build_rule(exception_locations)
+        if self.debug:
+            print("Generated Rego rule:")
+            print(rule)
+
+        # Upsert policy
+        if self.dry_run:
+            existing_policy = self._get_policy_by_name()
+            if existing_policy and existing_policy.get('uuid'):
+                print(f"Dry run - would update exception policy '{self.policy_name}' (uuid: {existing_policy.get('uuid')}) with update_mask spec.rule")
+            else:
+                print(f"Dry run - would create exception policy '{self.policy_name}' (uuid: will be assigned) with update_mask spec.rule")
+            # Log all matched secrets even in dry-run for traceability
+            success_count = 0
+            skipped_count = 0
+            for secret in secrets:
+                if self._should_except_secret(secret):
+                    self._log_Excepted_secret(secret)
+                    success_count += 1
+                else:
+                    skipped_count += 1
+            print(f"\nDry run completed: would have Excepted {success_count} secrets, skipped {skipped_count} secrets")
+            return 0
+
+        # Not dry run: apply policy changes
+        existing_policy = self._get_policy_by_name()
+        if existing_policy:
+            policy_uuid = existing_policy.get('uuid')
+            if not policy_uuid:
+                print("Error: Existing policy found but missing UUID")
+                return 1
+            ok = self._update_policy_rule(policy_uuid, rule)
+            if not ok:
+                return 1
+        else:
+            ok = self._create_policy(rule)
+            if not ok:
+                return 1
+
+        # Log all matched secrets
         success_count = 0
         skipped_count = 0
         for secret in secrets:
-            if self._should_dismiss_secret(secret):
-                if self.dry_run:
-                    print(f"Dry run - would have dismissed secret: {secret['uuid']} ({secret['meta']['description']})")
-                else:
-                    print(f"Dismissing secret: {secret['uuid']} ({secret['meta']['description']})")
-                    if not self.dismiss_secret(secret):
-                        print(f"\nERROR: Failed to dismiss secret {secret['uuid']}\n")
-                        continue
-                self._log_dismissed_secret(secret)
+            if self._should_except_secret(secret):
+                self._log_Excepted_secret(secret)
                 success_count += 1
             else:
-                if self.debug:
-                    print(f"Skipping secret: {secret['uuid']} (no matching locations)")
                 skipped_count += 1
 
-        if not self.dry_run:
-            print(f"Successfully dismissed {success_count} secrets, skipped {skipped_count} secrets")
-        else:
-            print(f"\nDry run completed: would have dismissed {success_count} secrets, skipped {skipped_count} secrets")
+        print(f"Successfully applied exception policy. Excepted {success_count} secrets, skipped {skipped_count} secrets")
         return 0
 
 def main():
     # Set up argument parser
-    parser = argparse.ArgumentParser(description='Dismiss secrets in Endor Labs given a set of locations')
+    parser = argparse.ArgumentParser(description='Except secrets in Endor Labs given a set of locations')
     parser.add_argument('--namespace', required=True, help='Endor namespace')
     parser.add_argument('--project-uuid', help='Optional project UUID to filter secrets to a specific project')
-    parser.add_argument('--locations-file', required=True, help='Path to file containing locations to dismiss')
+    parser.add_argument('--locations-file', required=True, help='Path to file containing locations to Except')
     parser.add_argument('--debug', action='store_true', help='Enable debug output')
     parser.add_argument('--no-dry-run', action='store_true', help='Proceed with dimiss actions (default is dry run)')
     args = parser.parse_args()
@@ -312,8 +500,8 @@ def main():
     # Load environment variables from .env file if it exists
     load_dotenv()
 
-     # Create and run the secret dismisser
-    secret_dismisser = SecretDismisser(
+     # Create and run the secret Excepter
+    secret_Excepter = SecretExcepter(
         namespace=args.namespace,
         debug=args.debug,
         dry_run=not args.no_dry_run,
@@ -321,7 +509,7 @@ def main():
         locations_file=args.locations_file
     )
 
-    exit_code = secret_dismisser.run()
+    exit_code = secret_Excepter.run()
     sys.exit(exit_code)
 
 

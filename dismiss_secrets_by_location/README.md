@@ -1,14 +1,15 @@
-# Dismiss Secrets by Location
+# Apply Secret Exceptions by Location
 
-A Python script to automatically dismiss secrets in Endor Labs based on a list of specific locations.
+A Python script that upserts an Endor Labs exception policy based on a list of secret locations.
 
 ## Overview
 
 This script connects to the Endor Labs API to:
 - Fetch secrets findings from a specified namespace
 - Filter secrets based on locations from a provided file
-- Dismiss matching secrets in Endor Labs
-- Log all dismissed secrets to a CSV file for audit purposes
+- Upsert an exception policy named "Scripted Secret Exceptions - Do Not Modify"
+- Populate the policy's Rego rule with matching "Secret Location" values
+- Log all affected secrets to a CSV file for audit purposes
 
 ## Prerequisites
 
@@ -21,7 +22,7 @@ This script connects to the Endor Labs API to:
 1. Clone or download this repository
 2. Install required Python packages:
 ```bash
-pip install requests python-dotenv
+pip install -r requirements.txt
 ```
 
 ## Configuration
@@ -61,12 +62,12 @@ python main.py --namespace <namespace> --locations-file <path-to-locations-file>
 
 ### Required Arguments
 - `--namespace`: Endor Labs namespace to process
-- `--locations-file`: Path to file containing locations to dismiss (one per line)
+- `--locations-file`: Path to file containing locations to include in the exception policy (one per line)
 
 ### Optional Arguments
 - `--project-uuid`: Filter secrets to a specific project UUID
 - `--debug`: Enable debug output for troubleshooting
-- `--no-dry-run`: Actually dismiss secrets (default is dry run mode)
+- `--no-dry-run`: Actually upsert the exception policy (default is dry run mode)
 
 ### Examples
 
@@ -75,7 +76,7 @@ python main.py --namespace <namespace> --locations-file <path-to-locations-file>
 python main.py --namespace my-company --locations-file locations.txt
 ```
 
-#### Actually Dismiss Secrets
+#### Apply/Update Exception Policy
 ```bash
 python main.py --namespace my-company --locations-file locations.txt --no-dry-run
 ```
@@ -97,12 +98,12 @@ https://github.com/myorg/myapp2/blob/main/out2.json#L28387
 ## Output
 
 ### Console Output
-- **Dry Run Mode**: Shows what would be dismissed with prefix `Dry run - would have dismissed secret:`
-- **Live Mode**: Shows actual dismissals with prefix `Dismissing secret:`
+- **Dry Run Mode**: Prints whether it would create or update the exception policy, including the policy UUID if found
+- **Live Mode**: Prints the result of creating or updating the policy
 - Summary of processed vs skipped secrets
 
 ### Log File
-The script creates a CSV log file: `dismiss_secrets_by_location.dismissed.<timestamp>.log`
+The script creates a CSV log file: `Except_secrets_by_location.excepted.<timestamp>.log`
 
 CSV Format:
 ```csv
@@ -118,21 +119,26 @@ CSV Format:
 4. **Filter & Match**: For each secret:
    - Extracts secret locations from `spec.finding_metadata.source_policy_info.results`
    - Checks if any secret location contains any location from the file
-   - If match found, set finding `spec.dismiss=true` and add `FINDING_TAGS_EXCEPTION` to `spec.finding_tags`
-5. **Dismiss**: In non-dry-run mode, calls Endor Labs API to dismiss matching secrets
-6. **Log**: Records all dismissed secrets to CSV file
+   - If match found, includes the location in the policy rule
+5. **Upsert Policy**: 
+   - Looks up exception policy named "Scripted Secret Exceptions - Do Not Modify"
+   - If found, PATCHes `{base_url}/v1/namespaces/{namespace}/policies` with `update_mask: spec.rule` (and name/type as needed)
+   - If not found, POSTs the policy with `meta`, `propagate`, and `spec` including `rule`
+6. **Log**: Records all affected secrets to CSV file
 
 ## API Details
 
 The script uses the following Endor Labs API endpoints:
 - `GET /v1/namespaces/{namespace}/findings` - Fetch secrets
-- `PATCH /v1/namespaces/{namespace}/findings` - Dismiss secrets
+- `GET /v1/namespaces/{namespace}/policies` - Lookup policy by name
+- `POST /v1/namespaces/{namespace}/policies` - Create exception policy
+- `PATCH /v1/namespaces/{namespace}/policies` - Update exception policy `spec.rule`
 
 ## Safety Features
 
 - **Dry Run by Default**: Script runs in safe mode unless `--no-dry-run` is specified
 - **Detailed Logging**: All actions are logged with timestamps
-- **Error Handling**: Continues processing even if individual dismissals fail
+- **Error Handling**: Continues processing even if policy operations fail
 - **Pagination Support**: Handles large result sets automatically
 
 ## Troubleshooting
@@ -175,6 +181,7 @@ Use `--debug` flag to see:
 - Review the locations file carefully before running
 - Always test with dry run mode first
 - Keep log files secure as they contain sensitive information
+- Policy name is hard-coded as "Scripted Secret Exceptions - Do Not Modify"; do not change it manually
 
 ## License
 
