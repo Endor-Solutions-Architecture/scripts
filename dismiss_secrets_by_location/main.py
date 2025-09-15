@@ -49,7 +49,7 @@ def get_endor_token() -> str:
 class SecretExcepter:
     """Handles Excepting secrets in Endor Labs given a set of locations."""
     
-    def __init__(self, namespace: str, debug: bool = False, dry_run: bool = True, project_uuid: str = None, locations_file: str = None):
+    def __init__(self, namespace: str, debug: bool = False, dry_run: bool = True, project_uuid: str = None, locations_file: str = None, timeout_seconds: int = 60):
         self.namespace = namespace
         self.debug = debug
         self.dry_run = dry_run
@@ -58,6 +58,7 @@ class SecretExcepter:
         self.locations = []
         self.base_url = "https://api.endorlabs.com"
         self.policy_name = "Scripted Secret Exceptions - Do Not Modify"
+        self.timeout_seconds = timeout_seconds
         
         # Get authentication token
         self.token = get_endor_token()
@@ -82,7 +83,8 @@ class SecretExcepter:
         try:
             headers = {
                 "Authorization": f"Bearer {self.token}",
-                "Content-Type": "application/json"
+                "Content-Type": "application/json",
+                "Request-Timeout": str(self.timeout_seconds)
             }
 
             url = f"{self.base_url}/v1/namespaces/{self.namespace}/findings"
@@ -494,6 +496,7 @@ def main():
     parser.add_argument('--project-uuid', help='Optional project UUID to filter secrets to a specific project')
     parser.add_argument('--locations-file', required=True, help='Path to file containing locations to Except')
     parser.add_argument('--debug', action='store_true', help='Enable debug output')
+    parser.add_argument('--timeout', type=int, default=60, help='Timeout in seconds for listing secrets only (default: 60)')
     parser.add_argument('--no-dry-run', action='store_true', help='Proceed with dimiss actions (default is dry run)')
     args = parser.parse_args()
 
@@ -506,7 +509,8 @@ def main():
         debug=args.debug,
         dry_run=not args.no_dry_run,
         project_uuid=args.project_uuid,
-        locations_file=args.locations_file
+        locations_file=args.locations_file,
+        timeout_seconds=args.timeout
     )
 
     exit_code = secret_Excepter.run()
