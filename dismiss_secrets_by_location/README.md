@@ -68,6 +68,7 @@ python main.py --namespace <namespace> --locations-file <path-to-locations-file>
 - `--project-uuid`: Filter secrets to a specific project UUID
 - `--debug`: Enable debug output for troubleshooting
 - `--no-dry-run`: Actually upsert the exception policy (default is dry run mode)
+- `--timeout`: Timeout in seconds for listing secrets; sent as `Request-Timeout` header (default: 60)
 
 ### Examples
 
@@ -84,6 +85,11 @@ python main.py --namespace my-company --locations-file locations.txt --no-dry-ru
 #### Debug Mode with Specific Project
 ```bash
 python main.py --namespace my-company --locations-file locations.txt --project-uuid 12345-abcde --debug
+```
+
+#### Increase Timeout for Listing Secrets
+```bash
+python main.py --namespace my-company --locations-file locations.txt --timeout 120
 ```
 
 ## Locations File Format
@@ -133,6 +139,10 @@ The script uses the following Endor Labs API endpoints:
 - `GET /v1/namespaces/{namespace}/policies` - Lookup policy by name
 - `POST /v1/namespaces/{namespace}/policies` - Create exception policy
 - `PATCH /v1/namespaces/{namespace}/policies` - Update exception policy `spec.rule`
+
+### Timeouts
+
+The `--timeout` flag applies only to the secrets listing call (`GET /v1/namespaces/{namespace}/findings`). The value is passed to Endor as the `Request-Timeout` header. Other API calls use default client timeouts.
 
 ## Safety Features
 
