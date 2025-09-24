@@ -10,6 +10,7 @@ This script connects to the Endor Labs API to:
 - Upsert an exception policy named "Scripted Secret Exceptions - Do Not Modify"
 - Populate the policy's Rego rule with matching "Secret Location" values
 - Log all affected secrets to a CSV file for audit purposes
+ - Automatically split large location sets across multiple policies (max 150 locations per policy)
 
 ## Prerequisites
 
@@ -126,10 +127,13 @@ CSV Format:
    - Extracts secret locations from `spec.finding_metadata.source_policy_info.results`
    - Checks if any secret location contains any location from the file
    - If match found, includes the location in the policy rule
-5. **Upsert Policy**: 
-   - Looks up exception policy named "Scripted Secret Exceptions - Do Not Modify"
-   - If found, PATCHes `{base_url}/v1/namespaces/{namespace}/policies` with `update_mask: spec.rule` (and name/type as needed)
+5. **Upsert Policies**: 
+   - Chunks locations into groups of at most 150 per policy
+   - Uses numbered policy names: `Scripted Secret Exceptions - Do Not Modify 1`, `... 2`, `... 3`, etc.
+   - For each chunked policy name: looks up by exact `meta.name`
+   - If found, PATCHes `{base_url}/v1/namespaces/{namespace}/policies` with `update_mask: meta.name,spec.rule,spec.policy_type`
    - If not found, POSTs the policy with `meta`, `propagate`, and `spec` including `rule`
+ - Removes any previously-created extra numbered policies that are no longer needed
 6. **Log**: Records all affected secrets to CSV file
 
 ## API Details
@@ -143,6 +147,12 @@ The script uses the following Endor Labs API endpoints:
 ### Timeouts
 
 The `--timeout` flag applies only to the secrets listing call (`GET /v1/namespaces/{namespace}/findings`). The value is passed to Endor as the `Request-Timeout` header. Other API calls use default client timeouts.
+
+### Policy limits
+
+- Each exception policy can hold up to 150 "Secret Location" values.
+- The script automatically creates or updates as many policies as needed using the base name `Scripted Secret Exceptions - Do Not Modify` suffixed with a space and an incrementing number.
+ - After upserting the required set, any surplus numbered policies are deleted.
 
 ## Safety Features
 

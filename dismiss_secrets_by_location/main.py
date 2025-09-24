@@ -57,7 +57,8 @@ class SecretExcepter:
         self.locations_file = locations_file
         self.locations = []
         self.base_url = "https://api.endorlabs.com"
-        self.policy_name = "Scripted Secret Exceptions - Do Not Modify"
+        self.policy_name_base = "Scripted Secret Exceptions - Do Not Modify"
+        self.max_locations_per_policy = 150
         self.timeout_seconds = timeout_seconds
         
         # Get authentication token
@@ -264,8 +265,8 @@ class SecretExcepter:
         )
         return rule
 
-    def _get_policy_by_name(self) -> Optional[Dict[str, Any]]:
-        """Return existing policy dict by name if found, else None."""
+    def _get_policy_by_exact_name(self, name: str) -> Optional[Dict[str, Any]]:
+        """Return existing policy dict by exact name if found, else None."""
         try:
             headers = {
                 "Authorization": f"Bearer {self.token}",
@@ -273,7 +274,7 @@ class SecretExcepter:
             }
             url = f"{self.base_url}/v1/namespaces/{self.namespace}/policies"
             params = {
-                "list_parameters.filter": f"meta.name==\"{self.policy_name}\"",
+                "list_parameters.filter": f"meta.name==\"{name}\"",
                 "list_parameters.page_size": 1
             }
             response = requests.get(url, headers=headers, params=params)
@@ -291,8 +292,8 @@ class SecretExcepter:
                 print(f"Error looking up policy: {e}")
             return None
 
-    def _create_policy(self, rule: str) -> bool:
-        """Create a new exception policy with the provided rule."""
+    def _create_policy(self, name: str, rule: str) -> bool:
+        """Create a new exception policy with the provided rule and name."""
         try:
             headers = {
                 "Authorization": f"Bearer {self.token}",
@@ -302,7 +303,7 @@ class SecretExcepter:
             payload = {
                     "meta": {
                         "description": "Exception Policy created by script",
-                        "name": self.policy_name,
+                        "name": name,
                         "tags": []
                     },
                     "propagate": True,
@@ -333,8 +334,8 @@ class SecretExcepter:
             print(f"Error creating policy: {e}")
             return False
 
-    def _update_policy_rule(self, policy_uuid: str, rule: str) -> bool:
-        """Update an existing policy's spec.rule using update_mask."""
+    def _update_policy_rule(self, policy_uuid: str, name: str, rule: str) -> bool:
+        """Update an existing policy's name and spec.rule using update_mask."""
         try:
             headers = {
                 "Authorization": f"Bearer {self.token}",
@@ -348,7 +349,7 @@ class SecretExcepter:
                 "object": {
                     "uuid": policy_uuid,
                     "meta": {
-                        "name": self.policy_name,
+                        "name": name,
                     },
                     "spec": {
                         "rule": rule,
@@ -369,6 +370,30 @@ class SecretExcepter:
             return False
         except Exception as e:
             print(f"Error updating policy: {e}")
+            return False
+
+    @staticmethod
+    def _chunk_list(items: List[str], chunk_size: int) -> List[List[str]]:
+        return [items[i:i + chunk_size] for i in range(0, len(items), chunk_size)]
+
+    def _delete_policy(self, policy_uuid: str) -> bool:
+        """Delete a policy by UUID."""
+        try:
+            headers = {
+                "Authorization": f"Bearer {self.token}",
+                "Content-Type": "application/json"
+            }
+            url = f"{self.base_url}/v1/namespaces/{self.namespace}/policies"
+            payload = {"object": {"uuid": policy_uuid}}
+            response = requests.delete(url, headers=headers, json=payload)
+            if response.status_code in (200, 204):
+                if self.debug:
+                    print(f"Policy deleted successfully: uuid={policy_uuid}")
+                return True
+            print(f"Error deleting policy: {response.status_code} - {response.text}")
+            return False
+        except Exception as e:
+            print(f"Error deleting policy: {e}")
             return False
 
     def except_secret(self, secret_finding: Dict[str, Any]) -> bool:
@@ -436,19 +461,32 @@ class SecretExcepter:
         exception_locations = self._collect_exception_locations(secrets)
         print(f"Collected {len(exception_locations)} unique 'Secret Location' values for exception policy")
 
-        # Build rule
-        rule = self._build_rule(exception_locations)
+        # Chunk locations across multiple policies if needed
+        location_chunks = self._chunk_list(exception_locations, self.max_locations_per_policy) or [[]]
         if self.debug:
-            print("Generated Rego rule:")
-            print(rule)
+            print(f"Locations will be split across {len(location_chunks)} policy(ies) with up to {self.max_locations_per_policy} per policy")
 
-        # Upsert policy
         if self.dry_run:
-            existing_policy = self._get_policy_by_name()
-            if existing_policy and existing_policy.get('uuid'):
-                print(f"Dry run - would update exception policy '{self.policy_name}' (uuid: {existing_policy.get('uuid')}) with update_mask spec.rule")
-            else:
-                print(f"Dry run - would create exception policy '{self.policy_name}' (uuid: will be assigned) with update_mask spec.rule")
+            for idx, locs in enumerate(location_chunks, start=1):
+                policy_name = f"{self.policy_name_base} {idx}"
+                rule = self._build_rule(locs)
+                if self.debug:
+                    print(f"Generated Rego rule for policy '{policy_name}':")
+                    print(rule)
+                existing_policy = self._get_policy_by_exact_name(policy_name)
+                if existing_policy and existing_policy.get('uuid'):
+                    print(f"Dry run - would update exception policy '{policy_name}' (uuid: {existing_policy.get('uuid')}) with update_mask spec.rule")
+                else:
+                    print(f"Dry run - would create exception policy '{policy_name}' (uuid: will be assigned) with update_mask spec.rule")
+            # Cleanup extra policies beyond needed chunks
+            cleanup_start = len(location_chunks) + 1
+            while True:
+                policy_name = f"{self.policy_name_base} {cleanup_start}"
+                existing_policy = self._get_policy_by_exact_name(policy_name)
+                if not existing_policy:
+                    break
+                print(f"Dry run - would delete extra exception policy '{policy_name}' (uuid: {existing_policy.get('uuid')})")
+                cleanup_start += 1
             # Log all matched secrets even in dry-run for traceability
             success_count = 0
             skipped_count = 0
@@ -461,20 +499,41 @@ class SecretExcepter:
             print(f"\nDry run completed: would have Excepted {success_count} secrets, skipped {skipped_count} secrets")
             return 0
 
-        # Not dry run: apply policy changes
-        existing_policy = self._get_policy_by_name()
-        if existing_policy:
+        # Not dry run: create/update each policy chunk
+        for idx, locs in enumerate(location_chunks, start=1):
+            policy_name = f"{self.policy_name_base} {idx}"
+            rule = self._build_rule(locs)
+            existing_policy = self._get_policy_by_exact_name(policy_name)
+            if existing_policy:
+                policy_uuid = existing_policy.get('uuid')
+                if not policy_uuid:
+                    print(f"Error: Existing policy '{policy_name}' found but missing UUID")
+                    return 1
+                ok = self._update_policy_rule(policy_uuid, policy_name, rule)
+                if not ok:
+                    return 1
+            else:
+                ok = self._create_policy(policy_name, rule)
+                if not ok:
+                    return 1
+
+        # Delete any extra policies beyond what is needed
+        cleanup_start = len(location_chunks) + 1
+        while True:
+            policy_name = f"{self.policy_name_base} {cleanup_start}"
+            existing_policy = self._get_policy_by_exact_name(policy_name)
+            if not existing_policy:
+                break
             policy_uuid = existing_policy.get('uuid')
             if not policy_uuid:
-                print("Error: Existing policy found but missing UUID")
-                return 1
-            ok = self._update_policy_rule(policy_uuid, rule)
+                if self.debug:
+                    print(f"Skipping delete of '{policy_name}' because UUID is missing")
+                cleanup_start += 1
+                continue
+            ok = self._delete_policy(policy_uuid)
             if not ok:
                 return 1
-        else:
-            ok = self._create_policy(rule)
-            if not ok:
-                return 1
+            cleanup_start += 1
 
         # Log all matched secrets
         success_count = 0
