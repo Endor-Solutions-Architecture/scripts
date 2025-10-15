@@ -1,0 +1,3 @@
+# This script only uses Python standard library modules
+# Python 3.6+ is required for f-strings and type hints
+python>=3.6
