@@ -21,6 +21,7 @@ class PackageVersionInfo:
 	meta_parent_uuid: Optional[str]
 	spec_project_uuid: Optional[str]
 	relative_path: Optional[str]
+	matched_pattern: Optional[str] = None
 
 
 class EndorClient:
@@ -202,10 +203,26 @@ class PatternMatcher:
 			p = self._normalize_pattern(p)
 			if not p:
 				continue
-			regex = fnmatch_translate_posix(p)
-			self._compiled.append((p, re.compile(regex)))
+			# Compile the original pattern, and if it ends with "/**",
+			# also compile a variant without the trailing "/**" so the
+			# directory itself matches (not only its descendants).
+			compile_specs: List[Tuple[str, str]] = [(p, p)]
+			if p.endswith("/**"):
+				without_globstar = p[:-3]
+				if without_globstar:
+					# Keep the display pattern as the original for reporting
+					# while compiling the relaxed matcher.
+					compile_specs.append((p, without_globstar))
+			for display_pat, compile_pat in compile_specs:
+				regex = self._translate_glob_to_regex(compile_pat)
+				self._compiled.append((display_pat, re.compile(regex)))
 
-	def matches_any(self, path: str) -> bool:
+	@staticmethod
+	def _translate_glob_to_regex(pat: str) -> str:
+		import fnmatch
+		return fnmatch.translate(pat)
+
+	def matches_any(self, path: str) -> Optional[str]:
 		path = self._normalize_path(path)
 		for pat, rgx in self._compiled:
 			matched = bool(rgx.search(path))
@@ -214,8 +231,8 @@ class PatternMatcher:
 			if matched:
 				if not self.debug:
 					print(f"MATCH pattern='{pat}' path='{path}'", flush=True)
-				return True
-		return False
+				return pat
+		return None
 
 	@staticmethod
 	def _normalize_path(path: str) -> str:
@@ -353,7 +370,9 @@ def main(argv: Optional[List[str]] = None) -> int:
 			continue
 		if args.debug:
 			print(f"DEBUG check relative_path='{path}'", flush=True)
-		if matcher.matches_any(path):
+		matched_pat = matcher.matches_any(path)
+		if matched_pat:
+			pv.matched_pattern = matched_pat
 			matches.append(pv)
 
 	# Step 3/4: Print and optionally delete
@@ -366,7 +385,8 @@ def main(argv: Optional[List[str]] = None) -> int:
 		ns = pv.namespace or args.namespace
 		uid = pv.uuid or pv.id or "<unknown>"
 		name = pv.name or "<unnamed>"
-		print(f"- namespace={ns} uuid={uid} name=\"{name}\"")
+		pat = pv.matched_pattern or "<unknown>"
+		print(f"- namespace={ns} uuid={uid} name=\"{name}\" pattern=\"{pat}\"")
 
 	if not args.no_dry_run:
 		print("Dry run: no deletions performed. Pass --no-dry-run to delete the above PackageVersions.")
@@ -378,10 +398,11 @@ def main(argv: Optional[List[str]] = None) -> int:
 		ns = pv.namespace or args.namespace
 		uid = pv.uuid or pv.id or "<unknown>"
 		name = pv.name or "<unnamed>"
+		pat = pv.matched_pattern or "<unknown>"
 		if ok:
-			print(f"DELETED: namespace={ns} uuid={uid} name=\"{name}\" -> {msg}")
+			print(f"DELETED: namespace={ns} uuid={uid} name=\"{name}\" pattern=\"{pat}\" -> {msg}")
 		else:
-			print(f"FAILED DELETE: namespace={ns} uuid={uid} name=\"{name}\" -> {msg}")
+			print(f"FAILED DELETE: namespace={ns} uuid={uid} name=\"{name}\" pattern=\"{pat}\" -> {msg}")
 			failures.append((pv, msg))
 
 	if failures:
