@@ -164,5 +164,8 @@ cython_debug/
 #.idea/
 .DS_Store
 
-# export findings data
-./export_findings_and_scanresults/exports/
+# export findings data and state
+exports/
+.state/
+export_findings_and_scanresults/exports/
+export_findings_and_scanresults/.state/
