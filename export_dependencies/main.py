@@ -7,12 +7,44 @@ import argparse
 import json
 from datetime import datetime
 from typing import List, Dict, Any, Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 # Load environment variables
 load_dotenv()
 
 API_URL = 'https://api.endorlabs.com/v1'
 ENDOR_NAMESPACE = os.getenv("ENDOR_NAMESPACE")
+SESSION: Optional[requests.Session] = None
+
+def _init_shared_session(max_pool: int = 20) -> None:
+    """Initialize a global shared Session with connection pooling and basic retries."""
+    global SESSION
+    if SESSION is not None:
+        return
+    sess = requests.Session()
+    retry = Retry(
+        total=3,
+        connect=3,
+        read=3,
+        backoff_factor=0.4,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=False  # retry on any method
+    )
+    adapter = HTTPAdapter(pool_connections=max_pool, pool_maxsize=max_pool, max_retries=retry)
+    sess.mount("https://", adapter)
+    sess.mount("http://", adapter)
+    # Keep-Alive is default, but ensure header present
+    sess.headers.update({"Connection": "keep-alive"})
+    SESSION = sess
+
+def _do_request(method: str, url: str, **kwargs) -> requests.Response:
+    """Use the shared session if initialized; otherwise fall back to requests.request."""
+    if SESSION is not None:
+        return SESSION.request(method, url, **kwargs)
+    return requests.request(method, url, **kwargs)
 
 def get_token(api_key: Optional[str] = None, api_secret: Optional[str] = None, token: Optional[str] = None) -> str:
     """Return a Bearer token. If token provided, use it; otherwise exchange api_key/secret for a token."""
@@ -34,14 +66,32 @@ def get_token(api_key: Optional[str] = None, api_secret: Optional[str] = None, t
     }
     headers = {"Content-Type": "application/json"}
 
-    response = requests.post(url, json=payload, headers=headers)
+    response = _do_request("POST", url, json=payload, headers=headers)
     if response.status_code == 200:
         return response.json().get('token')
     else:
         raise Exception(f"Failed to get token: {response.status_code}, {response.text}")
 
 
-def get_unique_dependencies(namespace: Optional[str] = None, token: Optional[str] = None, api_key: Optional[str] = None, api_secret: Optional[str] = None) -> Dict[str, Any]:
+def _authorized_request(method: str, url: str, headers: Dict[str, str], token_box: List[str], api_key: Optional[str], api_secret: Optional[str], **kwargs) -> requests.Response:
+    """
+    Make a request with Authorization and retry once on 401/403 by refreshing the token
+    if api_key/api_secret are available. token_box is a 1-element list to allow in-place updates.
+    """
+    merged_headers = dict(headers or {})
+    merged_headers["Authorization"] = f"Bearer {token_box[0]}"
+    resp = _do_request(method, url, headers=merged_headers, **kwargs)
+    if resp.status_code in (401, 403) and api_key and api_secret:
+        try:
+            token_box[0] = get_token(api_key=api_key, api_secret=api_secret, token=None)
+            merged_headers["Authorization"] = f"Bearer {token_box[0]}"
+            resp = _do_request(method, url, headers=merged_headers, **kwargs)
+        except Exception:
+            return resp
+    return resp
+
+
+def get_unique_dependencies(namespace: Optional[str] = None, token: Optional[str] = None, api_key: Optional[str] = None, api_secret: Optional[str] = None, debug: bool = False) -> Dict[str, Any]:
     """
     Download and return all unique dependencies aggregated by meta.name from the dependency-metadata API.
     
@@ -53,9 +103,9 @@ def get_unique_dependencies(namespace: Optional[str] = None, token: Optional[str
         raise ValueError("Namespace is required. Set ENDOR_NAMESPACE env var or pass namespace argument.")
     
     bearer_token = get_token(api_key=api_key, api_secret=api_secret, token=token)
+    token_box: List[str] = [bearer_token]
     url = f"{API_URL}/namespaces/{ns}/dependency-metadata"
     headers = {
-        "Authorization": f"Bearer {bearer_token}",
         "Content-Type": "application/json",
         "Accept-Encoding": "gzip, deflate, br, zstd",
         "Request-Timeout": "1800"
@@ -86,7 +136,9 @@ def get_unique_dependencies(namespace: Optional[str] = None, token: Optional[str
             # Ensure we don't send a stale token on the first page
             params.pop("list_parameters.page_token")
         
-        response = requests.get(url, headers=headers, params=params)
+        if debug:
+            print(f"[debug] dependency-metadata: fetching page {page_count} ...")
+        response = _authorized_request("GET", url, headers, token_box, api_key, api_secret, params=params)
         if response.status_code != 200:
             raise Exception(f"Failed to fetch dependency metadata (page {page_count}): {response.status_code}, {response.text}")
         
@@ -94,12 +146,19 @@ def get_unique_dependencies(namespace: Optional[str] = None, token: Optional[str
         groups = data.get("group_response", {}).get("groups", {}) or {}
         # Merge groups by key; later pages overwrite earlier duplicates if any
         merged_groups.update(groups)
+        if debug:
+            print(f"[debug] dependency-metadata: page {page_count} ok; page groups={len(groups)}, merged unique groups={len(merged_groups)}")
         
         # Handle pagination token in either list.response or group_response.response (depending on API)
         next_page_token = (
             data.get("list", {}).get("response", {}).get("next_page_token")
             or data.get("group_response", {}).get("response", {}).get("next_page_token")
         )
+        if debug:
+            if next_page_token:
+                print(f"[debug] dependency-metadata: next page token present, continuing ...")
+            else:
+                print(f"[debug] dependency-metadata: no next page, aggregation complete")
         if not next_page_token:
             break
     
@@ -187,9 +246,9 @@ def get_dependencies_details(namespace: Optional[str] = None, token: Optional[st
         raise ValueError("Namespace is required. Set ENDOR_NAMESPACE env var or pass namespace argument.")
     
     bearer_token = get_token(api_key=api_key, api_secret=api_secret, token=token)
+    token_box: List[str] = [bearer_token]
     url = f"{API_URL}/namespaces/{ns}/queries"
     headers = {
-        "Authorization": f"Bearer {bearer_token}",
         "Content-Type": "application/json",
         "Accept-Encoding": "gzip, deflate, br, zstd",
         "Request-Timeout": "1800"
@@ -266,7 +325,7 @@ def get_dependencies_details(namespace: Optional[str] = None, token: Optional[st
         elif "page_token" in lp:
             del lp["page_token"]
         
-        response = requests.post(url, headers=headers, json=payload)
+        response = _authorized_request("POST", url, headers, token_box, api_key, api_secret, json=payload)
         if response.status_code not in (200, 201):
             raise Exception(f"Failed to execute dependencies details query (page {page_count}): {response.status_code}, {response.text}")
         data = response.json()
@@ -298,11 +357,11 @@ def get_dependency_details(package_version_uuid: str, namespace: Optional[str] =
         return {"list": {"objects": []}}
     
     bearer_token = get_token(api_key=api_key, api_secret=api_secret, token=token)
+    token_box: List[str] = [bearer_token]
     # Metrics live under OSS namespace; keep tenant_meta.namespace='oss' and post to OSS endpoint path
     url_ns = "oss"
     url = f"{API_URL}/namespaces/{url_ns}/queries"
     headers = {
-        "Authorization": f"Bearer {bearer_token}",
         "Content-Type": "application/json",
         "Accept-Encoding": "gzip, deflate, br, zstd",
         "Request-Timeout": "1800"
@@ -336,7 +395,7 @@ def get_dependency_details(package_version_uuid: str, namespace: Optional[str] =
             lp["page_token"] = next_page_token
         elif "page_token" in lp:
             del lp["page_token"]
-        response = requests.post(url, headers=headers, json=payload)
+        response = _authorized_request("POST", url, headers, token_box, api_key, api_secret, json=payload)
         if response.status_code not in (200, 201):
             raise Exception(f"Failed to execute dependency metrics query (page {page_count}): {response.status_code}, {response.text}")
         data = response.json()
@@ -440,12 +499,15 @@ if __name__ == "__main__":
     parser.add_argument("--api-secret", default=os.getenv("ENDOR_API_CREDENTIALS_SECRET"), help="API secret (or set ENDOR_API_CREDENTIALS_SECRET)")
     parser.add_argument("--token", default=os.getenv("ENDOR_TOKEN"), help="Bearer token (or set ENDOR_TOKEN)")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
+    parser.add_argument("--workers", type=int, default=20, help="Number of parallel workers for API calls")
     args = parser.parse_args()
 
     # Validate namespace
     if not args.namespace:
         print("Error: --namespace or ENDOR_NAMESPACE is required.")
         sys.exit(1)
+    # Initialize shared HTTP session with connection pooling sized to workers
+    _init_shared_session(max_pool=args.workers)
 
     # If token not provided, ensure both api-key and api-secret exist
     if not args.token and (not args.api_key or not args.api_secret):
@@ -454,7 +516,7 @@ if __name__ == "__main__":
 
     try:
         print(f"Aggregating unique dependencies.  This make take a few minutes ...")
-        result = get_unique_dependencies(namespace=args.namespace, token=args.token, api_key=args.api_key, api_secret=args.api_secret)
+        result = get_unique_dependencies(namespace=args.namespace, token=args.token, api_key=args.api_key, api_secret=args.api_secret, debug=args.debug)
         groups = result.get("group_response", {}).get("groups", {}) or {}
         if args.debug:
             print(f"Number of unique dependencies found before de-duplication: {len(groups)}")
@@ -464,62 +526,16 @@ if __name__ == "__main__":
         rows.sort(key=lambda r: r["count"], reverse=True)
         # Debug: show effect of deduplication by meta.name
         print(f"Number of unique dependencies after de-duplication: {len(rows)} (removed {len(groups) - len(rows)} duplicates)")
-        
-        # Fetch dependency metrics for each package_version_uuid (using OSS namespace in query)
-        total_metric_records = 0
-        pkg_uuid_to_metrics: Dict[str, Dict[str, Any]] = {}
-        total_rows = len(rows)
-        last_progress_len = 0
-        for idx, row in enumerate(rows, 1):
-            msg = f"({idx}/{total_rows}) processing dependency: {row['name']}"
-            pad = " " * max(0, last_progress_len - len(msg))
-            print(f"\r{msg}{pad}", end="", flush=True)
-            last_progress_len = len(msg)
-            primary_uuid = row.get("package_version_uuid") or ""
-            fallback_uuid = row.get("importer_package_version_uuid") or ""
-            objects: List[Dict[str, Any]] = []
-            if not primary_uuid and not fallback_uuid:
-                if args.debug:
-                    print(f"\ndebug: skipping metrics for {row['name']} (no package_version_uuid available)")
-                pkg_uuid_to_metrics[primary_uuid] = extract_metrics_from_dependency_details(objects)
-                continue
-            if primary_uuid:
-                metrics_resp = get_dependency_details(
-                    package_version_uuid=primary_uuid,
-                    namespace=args.namespace,
-                    token=args.token,
-                    api_key=args.api_key,
-                    api_secret=args.api_secret,
-                    debug=args.debug
-                )
-                objects = metrics_resp.get("list", {}).get("objects", []) or []
-            if not objects and fallback_uuid and fallback_uuid != primary_uuid:
-                if args.debug:
-                    print(f"\ndebug: trying importer package_version_uuid for {row['name']}")
-                metrics_resp = get_dependency_details(
-                    package_version_uuid=fallback_uuid,
-                    namespace=args.namespace,
-                    token=args.token,
-                    api_key=args.api_key,
-                    api_secret=args.api_secret,
-                    debug=args.debug
-                )
-                objects = metrics_resp.get("list", {}).get("objects", []) or []
-            total_metric_records += len(objects)
-            pkg_uuid_to_metrics[row["package_version_uuid"]] = extract_metrics_from_dependency_details(objects)
-        # Finish the progress line with a newline
-        print()
-        print(f"Total dependency metric records: {total_metric_records}")
-        
-        # Now write CSV after fetching details
+
+        # Prepare CSV output
         os.makedirs("generated_reports", exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         ns_safe = (args.namespace or "namespace").replace("/", "_")
         output_path = f"generated_reports/unique_dependencies_{ns_safe}_{timestamp}.csv"
-        with open(output_path, "w", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            # Write header row
-            header = [
+        # Write header once
+        with open(output_path, "w", newline="", encoding="utf-8") as f_header:
+            writer = csv.writer(f_header)
+            writer.writerow([
                 "name",
                 "package_version_uuid",
                 "count",
@@ -529,22 +545,82 @@ if __name__ == "__main__":
                 "SCORE_CATEGORY_SECURITY",
                 "SCORE_CATEGORY_ACTIVITY",
                 "licenses"
-            ]
-            writer.writerow(header)
-            for row in rows:
-                metrics = pkg_uuid_to_metrics.get(row["package_version_uuid"], {})
+            ])
+
+        # Lock for safe serialized writes
+        write_lock = threading.Lock()
+        total_metric_records = 0
+        total_metric_records_lock = threading.Lock()
+
+        def process_and_write(row: Dict[str, Any]) -> int:
+            primary_uuid = row.get("package_version_uuid") or ""
+            fallback_uuid = row.get("importer_package_version_uuid") or ""
+            objects: List[Dict[str, Any]] = []
+            try:
+                if primary_uuid:
+                    metrics_resp = get_dependency_details(
+                        package_version_uuid=primary_uuid,
+                        namespace=args.namespace,
+                        token=args.token,
+                        api_key=args.api_key,
+                        api_secret=args.api_secret,
+                        debug=False
+                    )
+                    objects = metrics_resp.get("list", {}).get("objects", []) or []
+                if not objects and fallback_uuid and fallback_uuid != primary_uuid:
+                    metrics_resp = get_dependency_details(
+                        package_version_uuid=fallback_uuid,
+                        namespace=args.namespace,
+                        token=args.token,
+                        api_key=args.api_key,
+                        api_secret=args.api_secret,
+                        debug=False
+                    )
+                    objects = metrics_resp.get("list", {}).get("objects", []) or []
+                metrics = extract_metrics_from_dependency_details(objects)
                 cat_scores = metrics.get("category_scores", {}) or {}
-                writer.writerow([
-                    row["name"],
-                    row["package_version_uuid"],
-                    row["count"],
-                    metrics.get("overall_score", ""),
-                    cat_scores.get("SCORE_CATEGORY_POPULARITY", ""),
-                    cat_scores.get("SCORE_CATEGORY_CODE_QUALITY", ""),
-                    cat_scores.get("SCORE_CATEGORY_SECURITY", ""),
-                    cat_scores.get("SCORE_CATEGORY_ACTIVITY", ""),
-                    metrics.get("licenses", "")
-                ])
+                with write_lock:
+                    # Append row safely
+                    with open(output_path, "a", newline="", encoding="utf-8") as f_out:
+                        writer = csv.writer(f_out)
+                        writer.writerow([
+                            row["name"],
+                            row["package_version_uuid"],
+                            row["count"],
+                            metrics.get("overall_score", ""),
+                            cat_scores.get("SCORE_CATEGORY_POPULARITY", ""),
+                            cat_scores.get("SCORE_CATEGORY_CODE_QUALITY", ""),
+                            cat_scores.get("SCORE_CATEGORY_SECURITY", ""),
+                            cat_scores.get("SCORE_CATEGORY_ACTIVITY", ""),
+                            metrics.get("licenses", "")
+                        ])
+                return len(objects)
+            except Exception as ex:
+                if args.debug:
+                    print(f"\nerror processing {row.get('name')}: {ex}")
+                return 0
+
+        # Run in parallel
+        print(f"Fetching dependency metrics in parallel with {args.workers} workers ...")
+        futures = []
+        with ThreadPoolExecutor(max_workers=args.workers) as executor:
+            for row in rows:
+                futures.append(executor.submit(process_and_write, row))
+            completed = 0
+            total_futures = len(futures)
+            for future in as_completed(futures):
+                try:
+                    count = future.result()
+                    with total_metric_records_lock:
+                        total_metric_records += count
+                except Exception as e2:
+                    if args.debug:
+                        print(f"\nworker exception: {e2}")
+                completed += 1
+                if completed % 25 == 0 or completed == total_futures:
+                    print(f"\rcompleted {completed}/{total_futures}", end="", flush=True)
+        print()  # newline after progress
+        print(f"Total dependency metric records: {total_metric_records}")
         print(output_path)
     except Exception as e:
         print(f"Error fetching unique dependencies: {e}")
