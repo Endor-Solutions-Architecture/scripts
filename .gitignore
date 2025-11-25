@@ -167,5 +167,11 @@ cython_debug/
 # export findings data and state
 exports/
 .state/
+*.tar.gz
 export_findings_and_scanresults/exports/
 export_findings_and_scanresults/.state/
+export_findings_and_scanresults/.sanity_check_state/
+export_findings_and_scanresults/.sanity_check_logs/
+export_findings_and_scanresults/sanity_check_report.json
+export_findings_and_scanresults/.quick_check_progress.json
+export_findings_and_scanresults/.quick_check_errors.log

@@ -141,10 +141,220 @@ python main.py --force
 
 This will ignore state files and reprocess everything.
 
+## Creating Tar Archives
+
+After exporting data, you can create a compressed tar archive of a specific namespace's exports for easy backup or transfer:
+
+### Creating a Tar Archive
+
+To create a tar.gz archive of a namespace folder:
+
+```bash
+# From the script directory (where exports/ is located)
+cd export_findings_and_scanresults
+
+# Create a compressed tar archive of a namespace
+tar -czf <namespace>-exports-$(date +%Y%m%d).tar.gz exports/<namespace>/
+
+# Example:
+tar -czf my-namespace-exports-20250115.tar.gz exports/my-namespace/
+```
+
+### Extracting/Decompressing a Tar Archive
+
+To extract or decompress a tar archive:
+
+```bash
+# Extract the archive (creates the exports/<namespace>/ directory structure)
+tar -xzf <namespace>-exports-YYYYMMDD.tar.gz
+
+# Example:
+tar -xzf my-namespace-exports-20250115.tar.gz
+
+# Extract to a specific directory
+tar -xzf <namespace>-exports-YYYYMMDD.tar.gz -C /path/to/destination/
+
+# View contents without extracting (list files in archive)
+tar -tzf <namespace>-exports-YYYYMMDD.tar.gz
+
+# Example:
+tar -tzf my-namespace-exports-20250115.tar.gz
+```
+
+**Note**: The `-x` flag extracts, `-z` handles gzip compression, and `-f` specifies the filename. The `-C` flag can be used to extract to a different directory.
+
+### Alternative: Include Manifest in Archive
+
+To create an archive that includes the manifest CSV:
+
+```bash
+# Create archive including the manifest
+tar -czf <namespace>-exports-$(date +%Y%m%d).tar.gz exports/<namespace>/export_manifest.csv exports/<namespace>/*.json
+
+# Or archive the entire namespace folder (which includes the manifest)
+tar -czf <namespace>-complete-$(date +%Y%m%d).tar.gz exports/<namespace>/
+```
+
+## Sanity Check
+
+After exporting data, you can validate the exports using the `sanity_check.py` script. This script compares the counts in the manifest CSV files with current counts from the Endor API to verify export completeness.
+
+### Features
+
+- **Progress Tracking**: Tracks checked projects in state files, allowing resumption after interruptions
+- **Error Handling**: Comprehensive retry logic with exponential backoff for API errors, timeouts, and rate limits
+- **Error Logging**: Detailed error logs saved to `.sanity_check_logs/` directory
+- **Summary Reports**: JSON summary reports with detailed results for all checked projects
+- **Resume Support**: Can resume from previous runs, skipping already-checked projects
+- **Progress Indicators**: Shows ETA and progress for long-running checks
+
+### Running Sanity Check
+
+#### Check a Specific Namespace
+
+```bash
+python sanity_check.py --namespace my-namespace
+```
+
+#### Check with Date Filter
+
+To align counts with when the export was performed (useful if time has passed), use a date filter:
+
+```bash
+python sanity_check.py --namespace my-namespace --before-date 2025-01-15
+```
+
+#### Check All Namespaces
+
+```bash
+python sanity_check.py --all-namespaces
+
+# With date filter
+python sanity_check.py --all-namespaces --before-date 2025-01-15
+```
+
+#### Resume from Previous Check
+
+If the script was interrupted, you can resume from where it left off:
+
+```bash
+python sanity_check.py --namespace my-namespace --resume
+```
+
+#### Force Recheck All Projects
+
+To force recheck of all projects (clears state):
+
+```bash
+python sanity_check.py --namespace my-namespace --force
+```
+
+#### Custom Output File
+
+To specify a custom output file for the summary report:
+
+```bash
+python sanity_check.py --namespace my-namespace --output my_report.json
+```
+
+### Understanding the Results
+
+The sanity check script:
+- Reads manifest CSV files from `exports/<namespace>/export_manifest.csv`
+- Queries the API for current counts of findings and scan results per project
+- Compares manifest counts with API counts
+- Reports matches, mismatches, and differences
+- Saves detailed results to a JSON summary report
+- Logs errors to `.sanity_check_logs/<namespace>_errors.log`
+
+**Match Criteria:**
+- Exact match: Counts are identical
+- Close match: Counts are within 5% difference (accounts for timing differences)
+- Mismatch: Counts differ by more than 5%
+
+**Date Filtering:**
+When using `--before-date`, the script filters API counts to only include records created before the specified date. This helps align counts with when the export was performed, accounting for new records created after the export.
+
+**Error Handling:**
+- Automatic retries with exponential backoff for:
+  - HTTP 429 (Rate Limiting)
+  - HTTP 5xx (Server Errors)
+  - Network timeouts
+  - Connection errors
+- Failed projects are logged but don't stop the entire check
+- Progress is saved after each successful check, allowing safe interruption
+
+### Output Files
+
+The script generates several output files:
+
+1. **State Files** (`.sanity_check_state/<namespace>_checked_projects.json`):
+   - Tracks which projects have been checked
+   - Allows resuming from interruptions
+   - Can be cleared with `--force` flag
+
+2. **Error Logs** (`.sanity_check_logs/<namespace>_errors.log`):
+   - Detailed error logs for each failed check
+   - Includes timestamps, error types, and project information
+   - Useful for debugging and tracking issues
+
+3. **Summary Report** (`sanity_check_report.json` by default):
+   - Complete JSON report with all check results
+   - Includes per-project details, timestamps, and statistics
+   - Can be customized with `--output` flag
+
+### Example Output
+
+```
+============================================================
+Checking namespace: my-namespace
+============================================================
+  Found 10 projects in manifest
+  Using date filter: before 2025-01-15
+  Checking 10 project(s) (skipping 0 already checked)
+  [1/10] Checking my-project (abc12345...) [ETA: 2.3m]
+  [2/10] Checking another-project (def67890...) [ETA: 2.1m]
+    Findings: manifest=42, API=42, diff=0 (0.0%)
+    ScanResults: manifest=15, API=17, diff=2 (13.3%)
+
+============================================================
+SANITY CHECK SUMMARY
+============================================================
+
+Total Namespaces Checked: 1
+Total Projects: 10
+Projects Checked: 10
+Matches: 9
+Mismatches: 1
+Errors: 0
+
+Match Rate: 90.0%
+
+Per-Namespace Results:
+  my-namespace: 9/10 matches (90.0%)
+    Mismatches:
+      another-project:
+        ScanResults: 15 vs 17 (diff: 2)
+
+Summary report saved to: sanity_check_report.json
+
+Error logs available in: .sanity_check_logs/
+  - my-namespace_errors.log: 1 error(s)
+```
+
+### Exit Codes
+
+The script uses different exit codes to indicate results:
+- `0`: All checks passed (no mismatches or errors)
+- `1`: Mismatches found (count differences > 5%)
+- `2`: Errors encountered (API failures, timeouts, etc.)
+- `130`: Interrupted by user (Ctrl+C)
+
 ## Notes
 
-- The script processes projects sequentially to avoid overwhelming the API
+- The script processes projects concurrently using multiple threads for better performance
 - Large tenants with many projects may take significant time to complete
 - State files can be manually edited or deleted to control resumption behavior
 - Output files are JSON formatted with 2-space indentation for readability
+- Use the sanity check script to validate exports before archiving or sharing data
 
