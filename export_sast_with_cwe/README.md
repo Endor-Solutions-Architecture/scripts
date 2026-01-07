@@ -1,6 +1,6 @@
-# SAST Findings CSV Export with CWE
+# SAST Findings CSV Export with CWE Field
 
-This is a Python script that exports **SAST findings** from Endor Labs into a CSV file, with the **CWE column populated** from the SAST rule metadata. It's intended as a drop-in replacement for the standard SAST Findings export when you specifically need CWE values for SAST.
+This is a Python script that exports **SAST findings** from Endor Labs into a CSV file, with the **CWE column populated** from the SAST rule metadata. It's intended as a drop-in replacement for the standard SAST Findings export when you specifically need CWE values for SAST since the platform export doesn't include the CWE column.
 
 ---
 
