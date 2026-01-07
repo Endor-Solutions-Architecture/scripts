@@ -24,7 +24,7 @@ This is a Python script that exports **SAST findings** from Endor Labs into a CS
 ## Usage
 
 ```bash
-python export_sast_cwe.py -n <namespace> -o <output.csv>
+python export_sast_with_cwe.py -n <namespace> -o <output.csv>
 ```
 
 | Flag | Description |
@@ -35,7 +35,7 @@ python export_sast_cwe.py -n <namespace> -o <output.csv>
 **Example:**
 
 ```bash
-python export_sast_cwe.py -n my-org.prod -o sast-findings-with-cwe.csv
+python export_sast_with_cwe.py -n mynamespace -o sast-findings-with-cwe.csv
 ```
 
 ---
