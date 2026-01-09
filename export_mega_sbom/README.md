@@ -35,7 +35,7 @@ Generate a consolidated CycloneDX SBOM (Software Bill of Materials) by exporting
 
 ### Basic Usage
 
-**Step 1:** Create a text file containing the projects you want to include in your mega SBOM (one project per line):
+**Step 1:** Create a text file containing the projects you want to include in your mega SBOM (one project per line). Here's an example projects.txt file:
 
 ```
 https://github.com/your-org/project1.git
@@ -54,7 +54,7 @@ endorctl api list -r Project -n your-namespace \
 | jq -r '.list.objects[].meta.name' > projects.txt
 ```
 
-**Step 2:** Run the script with your project list:
+**Step 2:** Run the script with your projects list from the projects.txt file:
    ```bash
    python make_mega_sbom.py \
      -n your-namespace \
