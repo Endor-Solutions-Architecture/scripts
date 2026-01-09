@@ -43,7 +43,7 @@ https://github.com/your-org/project2.git
 https://dev.azure.com/your-org/project3/_git/project3
 ```
 
-You can create this file manually, or use the Endor Labs API to generate it automatically:
+You can create this file manually, or use the Endor Labs API to generate it automatically. This sample API call will grab projects that contain a certain name and add it to a projects.txt file:
 
 ```bash
 endorctl api list -r Project -n your-namespace \
