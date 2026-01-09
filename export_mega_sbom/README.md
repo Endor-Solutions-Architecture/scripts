@@ -1,6 +1,6 @@
 # Endor Labs Mega SBOM Generator
 
-Generate a consolidated CycloneDX SBOM (Software Bill of Materials) by exporting and merging multiple project SBOMs from the Endor Labs platform. This tool automatically traverses child namespaces to find projects across your entire namespace hierarchy.
+Generate a consolidated CycloneDX SBOM (Software Bill of Materials) by exporting and merging multiple SBOMs across multiple projects from the Endor Labs platform. This tool can automatically traverse sub-namespaces to find projects across your entire namespace hierarchy.
 
 ## Features
 
