@@ -26,7 +26,7 @@ Generate a consolidated CycloneDX SBOM (Software Bill of Materials) by exporting
    cd mega-sbom-export
    ```
 
-2. Ensure `endorctl` is installed and authenticated:
+2. Ensure `endorctl` is installed and authenticated ([docs here for reference](https://docs.endorlabs.com/endorctl/install-and-configure/)):
    ```bash
    endorctl init
    ```
