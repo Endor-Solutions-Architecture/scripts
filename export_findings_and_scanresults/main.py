@@ -31,9 +31,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
 
 
-# Load environment variables
-load_dotenv()
-
 # Configuration
 API_URL = 'https://api.endorlabs.com/v1'
 DEFAULT_TIMEOUT = 600
@@ -95,7 +92,6 @@ def get_session() -> requests.Session:
         connect=3,
         read=3,
         backoff_factor=0.5,
-        status_forcelist=[429, 500, 502, 503, 504],
         allowed_methods=["GET", "POST", "PUT", "PATCH", "DELETE"]
     )
     adapter = HTTPAdapter(max_retries=retry_strategy, pool_connections=16, pool_maxsize=32)
@@ -107,7 +103,7 @@ def get_session() -> requests.Session:
 def get_headers(token: str) -> Dict[str, str]:
     """Get request headers with authentication."""
     return {
-        "User-Agent": "curl/7.68.0",
+        "User-Agent": "endor-export-script/1.0",
         "Accept": "*/*",
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
@@ -160,7 +156,7 @@ def make_request_with_retry(
             else:
                 return response
                 
-        except (requests.Timeout, requests.ConnectionError, requests.ReadTimeout) as e:
+        except (requests.Timeout, requests.ConnectionError) as e:
             if attempt < max_retries - 1:
                 delay = RETRY_DELAY_BASE * (2 ** attempt) + (time.time() % 1)
                 print(f"  Retry {attempt + 1}/{max_retries} after {delay:.2f}s (error: {type(e).__name__})")
@@ -194,6 +190,9 @@ def paginated_get(
         base_params: Base query parameters (page_id will be added automatically)
         error_message: Optional error message prefix for logging
         stop_on_error: If True, stop on first error; if False, return partial results
+        timeout_seconds: Per-request timeout override (defaults to DEFAULT_TIMEOUT)
+        adaptive_page_size: If True, halve page_size on failures and retry the same page
+        min_page_size: Floor for adaptive page size reduction
     
     Returns:
         List of all objects from all pages
@@ -275,10 +274,10 @@ def get_all_namespaces(token: str, primary_namespace: str) -> List[str]:
     url = f"{API_URL}/namespaces"
     params = {
         'list_parameters.mask': 'uuid,meta.name',
-        'list_parameters.traverse': True
+        'list_parameters.traverse': 'true'
     }
     
-    namespaces = set()
+    namespaces = {primary_namespace}
     next_page_id = None
     
     try:
@@ -290,10 +289,6 @@ def get_all_namespaces(token: str, primary_namespace: str) -> List[str]:
             
             if not response or response.status_code != 200:
                 print(f"Warning: Failed to fetch namespaces. Status Code: {response.status_code if response else 'None'}")
-                # Fallback to using just the primary namespace
-                if not namespaces:
-                    print(f"  Falling back to primary namespace: {primary_namespace}")
-                    return [primary_namespace]
                 break
             
             response_data = response.json()
@@ -310,14 +305,9 @@ def get_all_namespaces(token: str, primary_namespace: str) -> List[str]:
             if not next_page_id:
                 break
         
-        namespace_list = sorted(list(namespaces))
-        # If we didn't find namespaces via the endpoint, fall back to projects method
-        if not namespace_list:
-            print("  Namespaces endpoint didn't return namespaces, extracting from projects...")
-            return _get_namespaces_from_projects(token, primary_namespace)
-        
+        namespace_list = sorted(namespaces)
         print(f"Found {len(namespace_list)} namespace(s): {', '.join(namespace_list)}")
-        return namespace_list if namespace_list else [primary_namespace]
+        return namespace_list
         
     except Exception as e:
         print(f"Error discovering namespaces: {e}")
@@ -332,7 +322,7 @@ def _get_namespaces_from_projects(token: str, primary_namespace: str) -> List[st
     url = f"{API_URL}/namespaces/{primary_namespace}/projects"
     params = {
         'list_parameters.mask': 'uuid,tenant_meta.namespace',
-        'list_parameters.traverse': True
+        'list_parameters.traverse': 'true'
     }
     
     projects = paginated_get(token, url, params)
@@ -364,7 +354,7 @@ def get_all_projects(token: str, namespace: str) -> List[Dict[str, Any]]:
     url = f"{API_URL}/namespaces/{namespace}/projects"
     params = {
         'list_parameters.mask': 'uuid,meta.name',
-        'list_parameters.traverse': True
+        'list_parameters.traverse': 'true'
     }
     
     projects = paginated_get(
@@ -547,7 +537,8 @@ def export_project_data(token: str, namespace: str, project: Dict[str, Any], for
     
     # Check if already processed (unless force)
     if not force:
-        processed = load_processed_projects(namespace)
+        with state_lock:
+            processed = load_processed_projects(namespace)
         if project_uuid in processed:
             print(f"    Skipping project {project_uuid} (already processed)")
             # Try to read counts from existing files
@@ -649,6 +640,8 @@ def write_manifest_csv(manifest_data: List[Dict[str, Any]], output_file: str):
 
 def main():
     """Main entry point."""
+    load_dotenv()
+
     parser = argparse.ArgumentParser(
         description="Export all findings and scan results for all projects across all namespaces in a tenant",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -742,23 +735,13 @@ Examples:
                                 namespace_manifest_data.append(result)
                             total_completed += 1
                         print(f"  [{completed}/{len(projects)}] Completed project: {project.get('name', 'Unknown')}")
-                    except KeyboardInterrupt:
-                        print("\n\nInterrupted by user. Progress has been saved.")
-                        print(f"Completed {total_completed}/{total_projects} projects")
-                        # Cancel remaining tasks
-                        for f in future_to_project:
-                            f.cancel()
-                        # Write partial manifest before exiting
-                        if namespace_manifest_data:
-                            manifest_file = os.path.join(OUTPUT_DIR, namespace, "export_manifest.csv")
-                            write_manifest_csv(namespace_manifest_data, manifest_file)
-                        sys.exit(0)
                     except Exception as e:
                         print(f"  Error processing project {project.get('uuid')}: {e}")
                         print(f"  Continuing with next project...")
             
-            # Write manifest CSV for this namespace
+            # Write manifest CSV for this namespace (sorted for deterministic output)
             if namespace_manifest_data:
+                namespace_manifest_data.sort(key=lambda d: d.get('project_uuid', ''))
                 manifest_file = os.path.join(OUTPUT_DIR, namespace, "export_manifest.csv")
                 write_manifest_csv(namespace_manifest_data, manifest_file)
                 print(f"  Namespace manifest written to: {manifest_file}")

@@ -15,6 +15,7 @@ Usage:
 """
 
 import argparse
+import csv
 import json
 import os
 import sys
@@ -108,7 +109,6 @@ def verify_single_project(namespace: str, project_uuid: str, project_name: str =
     # Get manifest counts
     manifest_file = exports_dir / "export_manifest.csv"
     if manifest_file.exists():
-        import csv
         try:
             with open(manifest_file, 'r', encoding='utf-8') as f:
                 reader = csv.DictReader(f)
@@ -149,8 +149,6 @@ def verify_project_files(namespace: str, project_uuid: str = None):
         print(f"Error: Manifest file not found: {manifest_file}")
         sys.exit(1)
     
-    # Read all projects from manifest
-    import csv
     projects = []
     try:
         with open(manifest_file, 'r', encoding='utf-8') as f:
