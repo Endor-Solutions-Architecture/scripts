@@ -143,7 +143,6 @@ def finding_to_csv_row(
         "aliases": aliases,
         "dependency": str(spec.get("target_dependency_package_name", "")),
         "project": str(project_display),
-        "link": link,
         "fix_available": str(spec.get("proposed_version", "")),
         "affected_versions": str(spec.get("target_dependency_version", "")),
         "epss_score": epss_score,
@@ -151,6 +150,7 @@ def finding_to_csv_row(
         "cvss_version": cvss_version,
         "remediation": str(spec.get("remediation", "")),
         "remediation_action": str(spec.get("remediation_action", "")),
+        "link": link,
     }
 
 
@@ -173,9 +173,9 @@ def write_findings_csv(
     filename = f"findings_{safe_tag}_{safe_ref}_{timestamp}.csv"
 
     fieldnames = [
-        "cwe", "cve_id", "aliases", "dependency", "project", "link",
+        "cwe", "cve_id", "aliases", "dependency", "project",
         "fix_available", "affected_versions", "epss_score", "base_cvss", "cvss_version",
-        "remediation", "remediation_action",
+        "remediation", "remediation_action", "link",
     ]
     rows = [finding_to_csv_row(obj, namespace, uuid_to_project_name) for obj in objects]
 
