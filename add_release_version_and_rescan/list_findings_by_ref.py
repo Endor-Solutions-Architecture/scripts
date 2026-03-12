@@ -60,6 +60,7 @@ def list_findings_for_ref(
         "api", "list", "-r", "Finding",
         "--filter", filter_expr,
         "--list-all",
+        "--timeout", "300s",
     ]
     return run_endorctl_json(cmd)
 

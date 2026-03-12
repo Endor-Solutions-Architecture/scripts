@@ -29,7 +29,7 @@ python main.py -n <namespace> --tag <tag> --ref-name <ref-name>
 ### Example
 
 ```bash
-python main.py -n leonardo-learn --tag my-product --ref-name release/1.0.0
+python main.py -n your-namespace --tag my-product --ref-name release/1.0.0
 ```
 
 ### What it does
@@ -61,10 +61,10 @@ python list_findings_by_ref.py -n <namespace> --tag <tag> --ref-name <ref-name> 
 
 ```bash
 # Summary + full JSON
-python list_findings_by_ref.py -n leonardo-learn --tag my-product --ref-name release/1.1.1
+python list_findings_by_ref.py -n your-namespace --tag my-product --ref-name release/1.1.1
 
 # Only JSON (e.g. pipe to jq or save to file)
-python list_findings_by_ref.py -n leonardo-learn --tag my-product --ref-name release/1.1.1 --json > findings.json
+python list_findings_by_ref.py -n your-namespace --tag my-product --ref-name release/1.1.1 --json > findings.json
 ```
 
 ### What it does
