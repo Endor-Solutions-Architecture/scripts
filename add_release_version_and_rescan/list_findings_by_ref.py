@@ -16,6 +16,7 @@ from typing import List, Dict, Any, Optional
 # Default field-mask for Finding list (vulnerability fields + dependency + remediation)
 DEFAULT_FINDINGS_FIELD_MASK = (
     "spec.finding_metadata.vulnerability.spec.raw,"
+    "spec.finding_metadata.vulnerability.spec.epss_score,"
     "spec.target_dependency_package_name,spec.proposed_version,spec.target_dependency_version,"
     "spec.project_uuid,spec.finding_metadata.vulnerability.spec.cvss_v3_severity,"
     "spec.remediation,spec.remediation_action,"
@@ -90,13 +91,19 @@ def list_findings_for_ref(
     return run_endorctl_json(cmd)
 
 
-def finding_to_csv_row(finding: Dict[str, Any]) -> Dict[str, str]:
+def finding_to_csv_row(
+    finding: Dict[str, Any],
+    namespace: str,
+    uuid_to_project_name: Optional[Dict[str, str]] = None,
+) -> Dict[str, str]:
     """Map one finding object to CSV column values."""
     spec = finding.get("spec", {})
+    project_uuid = spec.get("project_uuid", "")
+    project_display = (uuid_to_project_name or {}).get(project_uuid, project_uuid)
     vuln = spec.get("finding_metadata", {}).get("vulnerability", {}).get("spec", {})
     raw = vuln.get("raw", {})
     endor = raw.get("endor_vulnerability", {})
-    epss = raw.get("epss_record", {})
+    epss = vuln.get("epss_score", {})
     cvss3 = vuln.get("cvss_v3_severity") or {}
     cvss4 = vuln.get("cvss_v4_severity") or {}
 
@@ -117,15 +124,29 @@ def finding_to_csv_row(finding: Dict[str, Any]) -> Dict[str, str]:
     aliases_list = vuln.get("aliases") or []
     aliases = ",".join(str(a) for a in aliases_list) if isinstance(aliases_list, list) else str(aliases_list)
 
+    # epss_score: backend returns decimal (e.g. 0.34677) -> display as percentage (e.g. 34.68)
+    percentile_raw = epss.get("percentile_score")
+    if percentile_raw is not None and percentile_raw != "":
+        try:
+            epss_score = f"{float(percentile_raw) * 100:.2f}"
+        except (TypeError, ValueError):
+            epss_score = str(percentile_raw)
+    else:
+        epss_score = ""
+
+    finding_uuid = finding.get("uuid", "")
+    link = f"https://app.endorlabs.com/t/{namespace}/findings/{finding_uuid}" if namespace and finding_uuid else ""
+
     return {
         "cwe": str(endor.get("cwe", "")),
         "cve_id": str(endor.get("cve_id", "")),
         "aliases": aliases,
         "dependency": str(spec.get("target_dependency_package_name", "")),
-        "project": str(spec.get("project_uuid", "")),
+        "project": str(project_display),
+        "link": link,
         "fix_available": str(spec.get("proposed_version", "")),
         "affected_versions": str(spec.get("target_dependency_version", "")),
-        "epss_score": str(epss.get("probability", "")),
+        "epss_score": epss_score,
         "base_cvss": base_cvss,
         "cvss_version": cvss_version,
         "remediation": str(spec.get("remediation", "")),
@@ -138,7 +159,13 @@ def sanitize_filename_part(s: str) -> str:
     return re.sub(r'[/\\:*?"<>|\s]+', "_", s).strip("_") or "findings"
 
 
-def write_findings_csv(objects: List[Dict[str, Any]], tag: str, ref_name: str) -> str:
+def write_findings_csv(
+    objects: List[Dict[str, Any]],
+    tag: str,
+    ref_name: str,
+    namespace: str,
+    uuid_to_project_name: Optional[Dict[str, str]] = None,
+) -> str:
     """Write findings to a CSV file; return the file path."""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     safe_tag = sanitize_filename_part(tag)
@@ -146,11 +173,11 @@ def write_findings_csv(objects: List[Dict[str, Any]], tag: str, ref_name: str) -
     filename = f"findings_{safe_tag}_{safe_ref}_{timestamp}.csv"
 
     fieldnames = [
-        "cwe", "cve_id", "aliases", "dependency", "project", "fix_available",
-        "affected_versions", "epss_score", "base_cvss", "cvss_version",
+        "cwe", "cve_id", "aliases", "dependency", "project", "link",
+        "fix_available", "affected_versions", "epss_score", "base_cvss", "cvss_version",
         "remediation", "remediation_action",
     ]
-    rows = [finding_to_csv_row(obj) for obj in objects]
+    rows = [finding_to_csv_row(obj, namespace, uuid_to_project_name) for obj in objects]
 
     with open(filename, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -214,6 +241,7 @@ def main() -> None:
         return
 
     project_uuids = [p.get("uuid", "") for p in projects if p.get("uuid")]
+    uuid_to_project_name = {p.get("uuid", ""): p.get("meta", {}).get("name", "") for p in projects if p.get("uuid")}
     if not args.json:
         print(f"Found {len(project_uuids)} project(s). Querying findings for ref '{ref_name}'...", file=sys.stderr)
         if findings_filter is not None:
@@ -231,7 +259,7 @@ def main() -> None:
         print("-" * 50, file=sys.stderr)
 
     # Always write CSV with dynamic name + timestamp
-    csv_path = write_findings_csv(objects, tag, ref_name)
+    csv_path = write_findings_csv(objects, tag, ref_name, namespace, uuid_to_project_name)
     if not args.json:
         print(f"CSV written to: {csv_path}", file=sys.stderr)
 

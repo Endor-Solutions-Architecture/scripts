@@ -85,10 +85,11 @@ python list_findings_by_ref.py -n your-namespace --tag my-product --ref-name rel
 | `cve_id` | `spec.finding_metadata.vulnerability.spec.raw.endor_vulnerability.cve_id` |
 | `aliases` | `spec.finding_metadata.vulnerability.spec.aliases` (comma-joined) |
 | `dependency` | `spec.target_dependency_package_name` |
-| `project` | `spec.project_uuid` |
+| `project` | Project `meta.name` from the initial project list (resolved by `spec.project_uuid`) |
+| `link` | `https://app.endorlabs.com/t/{namespace}/findings/{uuid}` (finding URL in Endor UI) |
 | `fix_available` | `spec.proposed_version` |
 | `affected_versions` | `spec.target_dependency_version` |
-| `epss_score` | `spec.finding_metadata.vulnerability.spec.raw.epss_record.probability` |
+| `epss_score` | `spec.finding_metadata.vulnerability.spec.epss_score.percentile_score` (decimal from API converted to percentage, e.g. 0.34677 → 34.68) |
 | `base_cvss` | CVSS v3 score if present, else v4 base score |
 | `cvss_version` | `3` or `4` depending on which score is used |
 | `remediation` | `spec.remediation` |
