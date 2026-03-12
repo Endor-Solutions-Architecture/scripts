@@ -8,7 +8,20 @@ import subprocess
 import json
 import sys
 import argparse
+import csv
+import re
+from datetime import datetime
 from typing import List, Dict, Any, Optional
+
+# Default field-mask for Finding list (vulnerability fields + dependency + remediation)
+DEFAULT_FINDINGS_FIELD_MASK = (
+    "spec.finding_metadata.vulnerability.spec.raw,"
+    "spec.target_dependency_package_name,spec.proposed_version,spec.target_dependency_version,"
+    "spec.project_uuid,spec.finding_metadata.vulnerability.spec.cvss_v3_severity,"
+    "spec.remediation,spec.remediation_action,"
+    "spec.finding_metadata.vulnerability.spec.cvss_v4_severity,"
+    "spec.finding_metadata.vulnerability.spec.aliases"
+)
 
 # Default: critical/high, reachable (function + dependency), and normal (not test deps)
 DEFAULT_FINDINGS_FILTER = (
@@ -70,10 +83,81 @@ def list_findings_for_ref(
         "endorctl", "-n", namespace,
         "api", "list", "-r", "Finding",
         "--filter", filter_expr,
+        "--field-mask", DEFAULT_FINDINGS_FIELD_MASK,
         "--list-all",
         "--timeout", "300s",
     ]
     return run_endorctl_json(cmd)
+
+
+def finding_to_csv_row(finding: Dict[str, Any]) -> Dict[str, str]:
+    """Map one finding object to CSV column values."""
+    spec = finding.get("spec", {})
+    vuln = spec.get("finding_metadata", {}).get("vulnerability", {}).get("spec", {})
+    raw = vuln.get("raw", {})
+    endor = raw.get("endor_vulnerability", {})
+    epss = raw.get("epss_record", {})
+    cvss3 = vuln.get("cvss_v3_severity") or {}
+    cvss4 = vuln.get("cvss_v4_severity") or {}
+
+    # base_cvss: v3 score if present, else v4 base_score
+    v3_score = cvss3.get("score")
+    v4_score = cvss4.get("base_score")
+    if v3_score is not None:
+        base_cvss = str(v3_score)
+        cvss_version = "3"
+    elif v4_score is not None:
+        base_cvss = str(v4_score)
+        cvss_version = "4"
+    else:
+        base_cvss = ""
+        cvss_version = ""
+
+    # aliases: from vulnerability.spec.aliases (list -> comma-joined)
+    aliases_list = vuln.get("aliases") or []
+    aliases = ",".join(str(a) for a in aliases_list) if isinstance(aliases_list, list) else str(aliases_list)
+
+    return {
+        "cwe": str(endor.get("cwe", "")),
+        "cve_id": str(endor.get("cve_id", "")),
+        "aliases": aliases,
+        "dependency": str(spec.get("target_dependency_package_name", "")),
+        "project": str(spec.get("project_uuid", "")),
+        "fix_available": str(spec.get("proposed_version", "")),
+        "affected_versions": str(spec.get("target_dependency_version", "")),
+        "epss_score": str(epss.get("probability", "")),
+        "base_cvss": base_cvss,
+        "cvss_version": cvss_version,
+        "remediation": str(spec.get("remediation", "")),
+        "remediation_action": str(spec.get("remediation_action", "")),
+    }
+
+
+def sanitize_filename_part(s: str) -> str:
+    """Replace chars unsafe for filenames with underscore."""
+    return re.sub(r'[/\\:*?"<>|\s]+', "_", s).strip("_") or "findings"
+
+
+def write_findings_csv(objects: List[Dict[str, Any]], tag: str, ref_name: str) -> str:
+    """Write findings to a CSV file; return the file path."""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    safe_tag = sanitize_filename_part(tag)
+    safe_ref = sanitize_filename_part(ref_name)
+    filename = f"findings_{safe_tag}_{safe_ref}_{timestamp}.csv"
+
+    fieldnames = [
+        "cwe", "cve_id", "aliases", "dependency", "project", "fix_available",
+        "affected_versions", "epss_score", "base_cvss", "cvss_version",
+        "remediation", "remediation_action",
+    ]
+    rows = [finding_to_csv_row(obj) for obj in objects]
+
+    with open(filename, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    return filename
 
 
 def main() -> None:
@@ -146,7 +230,13 @@ def main() -> None:
         print(f"Findings for ref '{ref_name}': {len(objects)}", file=sys.stderr)
         print("-" * 50, file=sys.stderr)
 
-    print(json.dumps(response, indent=2))
+    # Always write CSV with dynamic name + timestamp
+    csv_path = write_findings_csv(objects, tag, ref_name)
+    if not args.json:
+        print(f"CSV written to: {csv_path}", file=sys.stderr)
+
+    if args.json:
+        print(json.dumps(response, indent=2))
 
 
 if __name__ == "__main__":

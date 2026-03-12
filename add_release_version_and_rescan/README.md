@@ -56,15 +56,15 @@ python list_findings_by_ref.py -n <namespace> --tag <tag> --ref-name <ref-name> 
 | `--tag`        | Yes | Project tag to match (same as script 1) |
 | `--ref-name`   | Yes | Ref/version to query (e.g. `release/1.1.1`) |
 | `--filter`     | No  | Optional filter expression for findings. If omitted, uses default: critical/high, reachable (function + dependency), and normal (not test deps). |
-| `--json`       | No  | Print only raw JSON to stdout (no summary) |
+| `--json`       | No  | Also print raw API JSON to stdout (CSV is always written) |
 
 ### Example
 
 ```bash
-# Summary + full JSON
+# Writes CSV + summary to stderr
 python list_findings_by_ref.py -n your-namespace --tag my-product --ref-name release/1.1.1
 
-# Only JSON (e.g. pipe to jq or save to file)
+# Same but also print API JSON to stdout (e.g. pipe to jq)
 python list_findings_by_ref.py -n your-namespace --tag my-product --ref-name release/1.1.1 --json > findings.json
 ```
 
@@ -73,8 +73,26 @@ python list_findings_by_ref.py -n your-namespace --tag my-product --ref-name rel
 1. Lists projects with the given tag (same as script 1).
 2. Builds a combined filter: scope (project UUIDs + `context.type==CONTEXT_TYPE_REF` + `context.id==<ref-name>`) **and** either the default criteria or your `--filter` expression.
 3. **Default filter** (when `--filter` is not set): critical or high severity, reachable (function and dependency), and normal (not test dependencies).
-4. Runs `endorctl api list -r Finding` with that filter and `--list-all`.
-5. Prints a short summary to stderr and the full API response JSON to stdout.
+4. Runs `endorctl api list -r Finding` with that filter, a default **field-mask** (vulnerability raw, dependency, CVSS, remediation, aliases), and `--list-all`.
+5. **Writes a CSV file** with a dynamic name: `findings_<tag>_<ref-name>_<YYYYMMDD_HHMMSS>.csv` (unsafe chars in tag/ref replaced by `_`).
+6. Prints a short summary and the CSV path to stderr. With `--json`, also prints the full API response to stdout.
+
+### CSV columns
+
+| Column | Source |
+|--------|--------|
+| `cwe` | `spec.finding_metadata.vulnerability.spec.raw.endor_vulnerability.cwe` |
+| `cve_id` | `spec.finding_metadata.vulnerability.spec.raw.endor_vulnerability.cve_id` |
+| `aliases` | `spec.finding_metadata.vulnerability.spec.aliases` (comma-joined) |
+| `dependency` | `spec.target_dependency_package_name` |
+| `project` | `spec.project_uuid` |
+| `fix_available` | `spec.proposed_version` |
+| `affected_versions` | `spec.target_dependency_version` |
+| `epss_score` | `spec.finding_metadata.vulnerability.spec.raw.epss_record.probability` |
+| `base_cvss` | CVSS v3 score if present, else v4 base score |
+| `cvss_version` | `3` or `4` depending on which score is used |
+| `remediation` | `spec.remediation` |
+| `remediation_action` | `spec.remediation_action` |
 
 ---
 
