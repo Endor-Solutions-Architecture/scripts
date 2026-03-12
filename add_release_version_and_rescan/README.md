@@ -47,7 +47,7 @@ List findings for a given ref-name across all projects that match a tag. Use aft
 ### Usage
 
 ```bash
-python list_findings_by_ref.py -n <namespace> --tag <tag> --ref-name <ref-name> [--json]
+python list_findings_by_ref.py -n <namespace> --tag <tag> --ref-name <ref-name> [--filter EXPR] [--json]
 ```
 
 | Argument       | Required | Description |
@@ -55,6 +55,7 @@ python list_findings_by_ref.py -n <namespace> --tag <tag> --ref-name <ref-name> 
 | `-n`, `--namespace` | Yes | Tenant namespace |
 | `--tag`        | Yes | Project tag to match (same as script 1) |
 | `--ref-name`   | Yes | Ref/version to query (e.g. `release/1.1.1`) |
+| `--filter`     | No  | Optional filter expression for findings. If omitted, uses default: critical/high, reachable (function + dependency), and normal (not test deps). |
 | `--json`       | No  | Print only raw JSON to stdout (no summary) |
 
 ### Example
@@ -70,9 +71,10 @@ python list_findings_by_ref.py -n your-namespace --tag my-product --ref-name rel
 ### What it does
 
 1. Lists projects with the given tag (same as script 1).
-2. Runs:  
-   `endorctl -n <namespace> api list -r Finding --filter="spec.project_uuid in ['uuid1','uuid2',...] and context.type=='CONTEXT_TYPE_REF' and context.id=='<ref-name>'" --list-all`
-3. Prints a short summary to stderr and the full API response JSON to stdout.
+2. Builds a combined filter: scope (project UUIDs + `context.type==CONTEXT_TYPE_REF` + `context.id==<ref-name>`) **and** either the default criteria or your `--filter` expression.
+3. **Default filter** (when `--filter` is not set): critical or high severity, reachable (function and dependency), and normal (not test dependencies).
+4. Runs `endorctl api list -r Finding` with that filter and `--list-all`.
+5. Prints a short summary to stderr and the full API response JSON to stdout.
 
 ---
 

@@ -10,6 +10,14 @@ import sys
 import argparse
 from typing import List, Dict, Any, Optional
 
+# Default: critical/high, reachable (function + dependency), and normal (not test deps)
+DEFAULT_FINDINGS_FILTER = (
+    '(spec.level in ["FINDING_LEVEL_CRITICAL","FINDING_LEVEL_HIGH"] and '
+    '(spec.finding_tags contains ["FINDING_TAGS_REACHABLE_FUNCTION"] and '
+    'spec.finding_tags contains ["FINDING_TAGS_REACHABLE_DEPENDENCY"] and '
+    'spec.finding_tags contains ["FINDING_TAGS_NORMAL"]))'
+)
+
 
 def run_endorctl_json(cmd: List[str]) -> Optional[Dict[str, Any]]:
     """Run endorctl and return parsed JSON, or None on failure."""
@@ -48,13 +56,16 @@ def list_findings_for_ref(
     namespace: str,
     project_uuids: List[str],
     ref_name: str,
+    findings_filter: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """List findings for the given project UUIDs on the given ref (context.id)."""
     if not project_uuids:
         return {"list": {"objects": [], "response": {}}}
-    # Filter: spec.project_uuid in ['uuid1','uuid2',...] and context.type=='CONTEXT_TYPE_REF' and context.id=='<ref-name>'
+    # Scope: projects + ref context
     uuid_list = "','".join(project_uuids)
-    filter_expr = f"spec.project_uuid in ['{uuid_list}'] and context.type=='CONTEXT_TYPE_REF' and context.id=='{ref_name}'"
+    scope_expr = f"spec.project_uuid in ['{uuid_list}'] and context.type=='CONTEXT_TYPE_REF' and context.id=='{ref_name}'"
+    criteria = findings_filter if findings_filter is not None else DEFAULT_FINDINGS_FILTER
+    filter_expr = f"{scope_expr} and ({criteria})"
     cmd = [
         "endorctl", "-n", namespace,
         "api", "list", "-r", "Finding",
@@ -73,6 +84,13 @@ def main() -> None:
     parser.add_argument("--tag", required=True, help="Project tag to match (e.g. my-product)")
     parser.add_argument("--ref-name", required=True, help="Ref/version to query (e.g. release/1.1.1)")
     parser.add_argument(
+        "--filter",
+        dest="findings_filter",
+        metavar="EXPR",
+        default=None,
+        help="Optional filter expression for findings. If omitted, uses default: critical/high, reachable, normal (not test deps).",
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
         help="Print only raw JSON to stdout (no summary to stderr)",
@@ -82,6 +100,7 @@ def main() -> None:
     namespace = args.namespace
     tag = args.tag
     ref_name = args.ref_name
+    findings_filter = args.findings_filter
 
     if not args.json:
         print("List findings by ref", file=sys.stderr)
@@ -113,8 +132,12 @@ def main() -> None:
     project_uuids = [p.get("uuid", "") for p in projects if p.get("uuid")]
     if not args.json:
         print(f"Found {len(project_uuids)} project(s). Querying findings for ref '{ref_name}'...", file=sys.stderr)
+        if findings_filter is not None:
+            print("Using custom --filter expression.", file=sys.stderr)
+        else:
+            print("Using default filter (critical/high, reachable, normal).", file=sys.stderr)
 
-    response = list_findings_for_ref(namespace, project_uuids, ref_name)
+    response = list_findings_for_ref(namespace, project_uuids, ref_name, findings_filter)
     if response is None:
         sys.exit(1)
 
