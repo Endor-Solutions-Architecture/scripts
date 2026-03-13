@@ -17,7 +17,7 @@ def get_token():
     1. ENDOR_TOKEN environment variable (e.g. from endorctl auth --print-access-token)
     2. API_KEY / API_SECRET credentials (exchanged for a token via the API)
     """
-    token = os.getenv("ENDOR_TOKEN")
+    token = os.getenv("ENDOR_API_TOKEN")
     if token:
         return token
 
@@ -27,8 +27,8 @@ def get_token():
     if not api_key or not api_secret:
         print(
             "Error: No authentication method available.\n"
-            "Either set ENDOR_TOKEN (recommended):\n"
-            '  export ENDOR_TOKEN="$(endorctl auth --print-access-token)"\n'
+            "Either set ENDOR_API_TOKEN (recommended):\n"
+            '  export ENDOR_API_TOKEN="$(endorctl auth --print-access-token)"\n'
             "Or provide API_KEY and API_SECRET in your .env file."
         )
         sys.exit(1)

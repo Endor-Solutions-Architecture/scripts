@@ -21,7 +21,7 @@ pip install -r requirements.txt
 # 2. Authenticate (pick one)
 
 #    Option A – endorctl token (recommended, no .env needed)
-export ENDOR_TOKEN="$(endorctl auth --print-access-token)"
+export ENDOR_API_TOKEN="$(endorctl auth --print-access-token)"
 
 #    Option B – API key/secret via .env file
 cp .env.example .env
@@ -37,10 +37,10 @@ The script resolves a bearer token using the following precedence:
 
 | Priority | Method | How to set |
 |----------|--------|------------|
-| 1 | `ENDOR_TOKEN` env var | `export ENDOR_TOKEN="$(endorctl auth --print-access-token)"` |
+| 1 | `ENDOR_API_TOKEN` env var | `export ENDOR_API_TOKEN="$(endorctl auth --print-access-token)"` |
 | 2 | API key / secret | Set `API_KEY` and `API_SECRET` in a `.env` file |
 
-Using `ENDOR_TOKEN` is recommended because it leverages your existing `endorctl` session — no need to create and manage long-lived API credentials.
+Using `ENDOR_API_TOKEN` is recommended because it leverages your existing `endorctl` session — no need to create and manage long-lived API credentials.
 
 ## Configuration
 
@@ -84,6 +84,6 @@ export GITORG="acme"
 python3 project_tags.py projects.csv
 
 # Mix: env var for auth, CLI flags for namespace/org
-export ENDOR_TOKEN="$(endorctl auth --print-access-token)"
+export ENDOR_API_TOKEN="$(endorctl auth --print-access-token)"
 python3 project_tags.py --namespace acme.gh-acme --gitorg acme projects.csv
 ```
