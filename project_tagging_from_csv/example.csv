@@ -1,0 +1,5 @@
+my-api-service,security
+frontend-app,platform,ui_team
+data-pipeline,"PRO Team,DataTeam"
+auth-service,
+billing-service,compliance
