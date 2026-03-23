@@ -75,6 +75,40 @@ Dates must be in `YYYY-MM-DD` format; `--start-date` must be on or before `--end
 4. For each description that contains a GHSA ID and no CVE ID, calls `POST /namespaces/oss/queries/vulnerabilities` once per unique GHSA and caches the CVE ID. CVE ID column is filled from description when a CVE is present, else from that cache when a GHSA is present, else `missing`.
 5. Writes the output CSV with all columns in the order listed above.
 
+## Running via Claude Code skill
+
+If you use [Claude Code](https://claude.ai/claude-code), you can run this script through the `generate-remediation-report` skill instead of invoking the script manually.
+
+### Prerequisites
+
+- Claude Code installed and running in the `scripts/` directory of this repo.
+- `.env` configured as described in [Setup](#setup) above.
+
+### How to invoke
+
+Type the following in the Claude Code chat:
+
+```
+/generate-remediation-report for project with uuid <project-uuid> for the month of <Month YYYY> and write the output to <file>.csv
+```
+
+Or just type `/generate-remediation-report` and Claude will prompt you for the required parameters interactively.
+
+### What the skill does
+
+1. **Collects parameters** – parses `--start-date`, `--end-date`, `--output`, and optional `--project-uuid` / `--batch-size` from your message, or asks for any that are missing.
+2. **Checks environment setup** – verifies that `.env` exists and that a virtual environment is present at `remediated_findings_report/.venv/`. If the venv is missing, Claude creates it and installs dependencies automatically.
+3. **Runs the script** – activates the venv and executes `generate_remediation_report.py` with the collected flags.
+4. **Reports results** – confirms the output CSV path and the number of rows written, or surfaces any errors with diagnostic guidance.
+
+### Example
+
+```
+/generate-remediation-report for project with uuid <project-uuid> for the month of February 2026 and write the output to sample.csv
+```
+
+Claude will resolve the dates to `--start-date 2026-02-01 --end-date 2026-02-28`, set up the environment if needed, run the script, and confirm the output.
+
 ## No Warranty
 
 This software is provided on an "as is" basis, without warranty of any kind. You are solely responsible for determining whether this software is suitable for your use.
