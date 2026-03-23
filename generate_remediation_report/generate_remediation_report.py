@@ -61,8 +61,38 @@ OUTPUT_COLUMNS = [
     "Category",
     "Ecosystem",
     "Project UUID",
+    "Reachability",
+    "Fixable",
     "Namespace",
 ]
+
+
+_ECOSYSTEM_DISPLAY_MAP = {
+    "ECOSYSTEM_APK": "APK",
+    "ECOSYSTEM_C": "C/C++",
+    "ECOSYSTEM_CARGO": "Rust",
+    "ECOSYSTEM_COCOAPOD": "CocoaPods",
+    "ECOSYSTEM_DEBIAN": "Debian",
+    "ECOSYSTEM_GEM": "Ruby",
+    "ECOSYSTEM_GO": "Go",
+    "ECOSYSTEM_MAVEN": "Java",
+    "ECOSYSTEM_NPM": "JavaScript",
+    "ECOSYSTEM_NUGET": ".NET",
+    "ECOSYSTEM_PACKAGIST": "PHP",
+    "ECOSYSTEM_PYPI": "Python",
+    "ECOSYSTEM_RPM": "RPM",
+    "ECOSYSTEM_SWIFT": "Swift",
+}
+
+
+def friendly_ecosystem(raw: str) -> str:
+    """Map raw ecosystem enum to a human-readable name."""
+    if not raw:
+        return ""
+    label = _ECOSYSTEM_DISPLAY_MAP.get(raw)
+    if label:
+        return label
+    return raw.replace("ECOSYSTEM_", "").replace("_", " ").title()
 
 
 def get_token() -> str:
@@ -210,6 +240,37 @@ def get_package_version_relative_paths_and_code_owners(
             if not next_page_id:
                 break
     return relative_paths, code_owners_map
+
+
+_REACHABILITY_TAG_MAP = {
+    "FINDING_TAGS_REACHABLE_FUNCTION": "Reachable",
+    "FINDING_TAGS_UNREACHABLE_FUNCTION": "Unreachable",
+    "FINDING_TAGS_POTENTIALLY_REACHABLE_FUNCTION": "Potentially Reachable",
+}
+
+
+def derive_fixable(finding_tags: Any) -> str:
+    """Return Yes/No fixability label from finding_tags."""
+    if not finding_tags:
+        return ""
+    tags = finding_tags if isinstance(finding_tags, list) else [finding_tags]
+    if "FINDING_TAGS_FIX_AVAILABLE" in tags:
+        return "Yes"
+    if "FINDING_TAGS_UNFIXABLE" in tags:
+        return "No"
+    return ""
+
+
+def derive_reachability(finding_tags: Any) -> str:
+    """Return a human-readable reachability label from finding_tags."""
+    if not finding_tags:
+        return ""
+    tags = finding_tags if isinstance(finding_tags, list) else [finding_tags]
+    for tag in tags:
+        label = _REACHABILITY_TAG_MAP.get(tag)
+        if label:
+            return label
+    return ""
 
 
 def format_list_field(val: Any) -> str:
@@ -453,8 +514,10 @@ def main() -> None:
             "Days Unresolved": format_list_field(spec.get("days_unresolved")),
             "Tags": format_list_field(spec.get("finding_tags")),
             "Category": format_list_field(spec.get("finding_categories")),
-            "Ecosystem": spec.get("ecosystem", ""),
+            "Ecosystem": friendly_ecosystem(spec.get("ecosystem", "")),
             "Project UUID": meta.get("parent_uuid", ""),
+            "Reachability": derive_reachability(spec.get("finding_tags")),
+            "Fixable": derive_fixable(spec.get("finding_tags")),
             "Namespace": tenant_meta.get("namespace", ""),
         })
 

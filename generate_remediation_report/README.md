@@ -1,6 +1,6 @@
 # Remediated Findings Report
 
-Generates a CSV report of remediated vulnerable findings by fetching finding logs from the Endor API within a date range (and optionally filtered by project), then enriching with PackageVersion (Package Location from `spec.relative_path`, Code Owners from `spec.code_owners.owners`) and CVE ID (from description when present, or from the vulnerabilities API when a GHSA ID is in the description). No input CSV is required—all data comes from the Finding Log, Package Version, and Vulnerabilities APIs.
+Generates a CSV report of remediated vulnerable findings by fetching finding logs from the Endor API within a date range (and optionally filtered by project), then enriching with PackageVersion (Package Location from `spec.relative_path`, Code Owners from `spec.code_owners.owners`), CVE ID (from description when present, or from the vulnerabilities API when a GHSA ID is in the description), Reachability and Fixable status (derived from `spec.finding_tags`), and a human-readable Ecosystem name. No input CSV is required—all data comes from the Finding Log, Package Version, and Vulnerabilities APIs.
 
 ## Data source
 
@@ -23,8 +23,30 @@ Report uses these display headers:
 - **Days Unresolved**
 - **Tags**
 - **Category**
-- **Ecosystem**
+- **Ecosystem** – Mapped from the raw API enum to a human-readable name (e.g. `ECOSYSTEM_PYPI` → `Python`, `ECOSYSTEM_NPM` → `JavaScript`, `ECOSYSTEM_MAVEN` → `Java`). Full mapping:
+
+  | Raw Value | Display |
+  |---|---|
+  | `ECOSYSTEM_APK` | APK |
+  | `ECOSYSTEM_C` | C/C++ |
+  | `ECOSYSTEM_CARGO` | Rust |
+  | `ECOSYSTEM_COCOAPOD` | CocoaPods |
+  | `ECOSYSTEM_DEBIAN` | Debian |
+  | `ECOSYSTEM_GEM` | Ruby |
+  | `ECOSYSTEM_GO` | Go |
+  | `ECOSYSTEM_MAVEN` | Java |
+  | `ECOSYSTEM_NPM` | JavaScript |
+  | `ECOSYSTEM_NUGET` | .NET |
+  | `ECOSYSTEM_PACKAGIST` | PHP |
+  | `ECOSYSTEM_PYPI` | Python |
+  | `ECOSYSTEM_RPM` | RPM |
+  | `ECOSYSTEM_SWIFT` | Swift |
+
+  Unknown values fall back to stripping the `ECOSYSTEM_` prefix and title-casing the remainder.
+
 - **Project UUID**
+- **Reachability** – Derived from `spec.finding_tags`: `FINDING_TAGS_REACHABLE_FUNCTION` → **Reachable**, `FINDING_TAGS_UNREACHABLE_FUNCTION` → **Unreachable**, `FINDING_TAGS_POTENTIALLY_REACHABLE_FUNCTION` → **Potentially Reachable**. Blank when none of these tags are present.
+- **Fixable** – Derived from `spec.finding_tags`: `FINDING_TAGS_FIX_AVAILABLE` → **Yes**, `FINDING_TAGS_UNFIXABLE` → **No**. Blank when neither tag is present.
 - **Namespace**
 
 ## Setup
@@ -97,7 +119,7 @@ Or just type `/generate-remediation-report` and Claude will prompt you for the r
 ### What the skill does
 
 1. **Collects parameters** – parses `--start-date`, `--end-date`, `--output`, and optional `--project-uuid` / `--batch-size` from your message, or asks for any that are missing.
-2. **Checks environment setup** – verifies that `.env` exists and that a virtual environment is present at `remediated_findings_report/.venv/`. If the venv is missing, Claude creates it and installs dependencies automatically.
+2. **Checks environment setup** – verifies that `.env` exists and that a virtual environment is present at `generate_remediation_report/.venv/`. If the venv is missing, Claude creates it and installs dependencies automatically.
 3. **Runs the script** – activates the venv and executes `generate_remediation_report.py` with the collected flags.
 4. **Reports results** – confirms the output CSV path and the number of rows written, or surfaces any errors with diagnostic guidance.
 
