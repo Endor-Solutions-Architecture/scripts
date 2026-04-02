@@ -10,11 +10,27 @@ import subprocess
 import json
 import os
 from datetime import datetime, timedelta, timezone
+from io import BytesIO
 from typing import List, Dict, Any, Optional
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
 
 import streamlit as st
 import pandas as pd
 import altair as alt
+
+from reportlab.lib.pagesizes import letter, landscape
+from reportlab.lib.units import inch
+from reportlab.lib.colors import HexColor
+from reportlab.platypus import (
+    SimpleDocTemplate, Paragraph, Spacer, Image as RLImage,
+    Table, TableStyle, KeepTogether,
+)
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.enums import TA_CENTER, TA_LEFT
 
 
 UI_BASE = "https://app.endorlabs.com"
@@ -188,6 +204,227 @@ def run_analysis(namespace: str, days: int) -> pd.DataFrame:
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
     df = df.sort_values("date", ascending=False).reset_index(drop=True)
     return df
+
+
+BRAND = {
+    "green": "#00D26A",
+    "dark": "#1A1A2E",
+    "block": "#d32f2f",
+    "warn": "#fbc02d",
+    "text_primary": "#1A1A2E",
+    "text_secondary": "#5A6577",
+    "white": "#FFFFFF",
+    "table_header_bg": "#1A1A2E",
+    "table_header_text": "#FFFFFF",
+    "table_row_alt": "#F8F9FA",
+    "table_border": "#DEE2E6",
+}
+
+
+def _fig_to_rl_image(fig, width: float, height: float) -> RLImage:
+    """Convert a matplotlib figure to a ReportLab Image."""
+    buf = BytesIO()
+    fig.savefig(buf, format="png", dpi=150, bbox_inches="tight",
+                facecolor=fig.get_facecolor(), edgecolor="none")
+    plt.close(fig)
+    buf.seek(0)
+    return RLImage(buf, width=width, height=height)
+
+
+def _build_timeline_chart(df: pd.DataFrame, page_width: float) -> RLImage:
+    """Render the timeline bar chart for the PDF."""
+    chart_df = df.copy()
+    chart_df["day"] = chart_df["date"].dt.date
+
+    daily = chart_df.groupby(["day", "outcome"]).size().reset_index(name="count")
+    pivot = daily.pivot(index="day", columns="outcome", values="count").fillna(0)
+    pivot.index = pd.to_datetime(pivot.index)
+
+    fig, ax = plt.subplots(figsize=(page_width / 72, 2.8))
+    fig.set_facecolor(BRAND["white"])
+    ax.set_facecolor(BRAND["white"])
+
+    bar_width = 0.8
+    bottom = None
+    for outcome, color in [("block", BRAND["block"]), ("warn", BRAND["warn"])]:
+        if outcome in pivot.columns:
+            vals = pivot[outcome].values
+            ax.bar(pivot.index, vals, width=bar_width, bottom=bottom,
+                   color=color, label=outcome, edgecolor="none")
+            bottom = vals if bottom is None else bottom + vals
+
+    ax.set_ylabel("Count", fontsize=9, color=BRAND["text_secondary"])
+    ax.legend(fontsize=8, frameon=False)
+    ax.grid(axis="y", linestyle="-", alpha=0.15, color="#AAAAAA")
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.spines["left"].set_color("#DDDDDD")
+    ax.spines["bottom"].set_color("#DDDDDD")
+    ax.tick_params(colors=BRAND["text_secondary"], labelsize=8)
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %d"))
+    plt.setp(ax.get_xticklabels(), rotation=30, ha="right", fontsize=8)
+    fig.tight_layout()
+
+    return _fig_to_rl_image(fig, page_width, 2.8 * 72)
+
+
+def generate_pdf(df: pd.DataFrame, namespace: str, days: int) -> bytes:
+    """Generate a branded PDF report and return as bytes."""
+    buf = BytesIO()
+    page_w, page_h = landscape(letter)
+    margin = 0.6 * inch
+    doc = SimpleDocTemplate(buf, pagesize=landscape(letter),
+                            leftMargin=margin, rightMargin=margin,
+                            topMargin=margin, bottomMargin=margin)
+    usable_width = page_w - 2 * margin
+
+    styles = getSampleStyleSheet()
+    styles.add(ParagraphStyle("Title2", parent=styles["Title"],
+                              fontSize=20, textColor=HexColor(BRAND["dark"]),
+                              spaceAfter=4))
+    styles.add(ParagraphStyle("Subtitle", parent=styles["Normal"],
+                              fontSize=10, textColor=HexColor(BRAND["text_secondary"]),
+                              spaceAfter=12))
+    styles.add(ParagraphStyle("SectionHeader", parent=styles["Heading2"],
+                              fontSize=13, textColor=HexColor(BRAND["dark"]),
+                              spaceBefore=16, spaceAfter=8))
+    styles.add(ParagraphStyle("CellText", parent=styles["Normal"],
+                              fontSize=7, leading=9))
+
+    elements = []
+
+    # --- Header ---
+    elements.append(Paragraph("PR Block/Warn Report", styles["Title2"]))
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    elements.append(Paragraph(f"Namespace: {namespace}  |  Lookback: {days} days  |  Generated: {ts}",
+                              styles["Subtitle"]))
+
+    # Green divider
+    divider_data = [["" ]]
+    divider = Table(divider_data, colWidths=[usable_width], rowHeights=[3])
+    divider.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), HexColor(BRAND["green"]))]))
+    elements.append(divider)
+    elements.append(Spacer(1, 12))
+
+    # --- Summary cards ---
+    total = len(df)
+    blocked = len(df[df["outcome"] == "block"])
+    warned = len(df[df["outcome"] == "warn"])
+    projects_affected = df["project_name"].nunique()
+
+    summary_data = [
+        ["Total Block/Warn PRs", "Blocked", "Warned", "Projects Affected"],
+        [str(total), str(blocked), str(warned), str(projects_affected)],
+    ]
+    col_w = usable_width / 4
+    summary_table = Table(summary_data, colWidths=[col_w] * 4, rowHeights=[20, 32])
+    summary_table.setStyle(TableStyle([
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica"),
+        ("FONTSIZE", (0, 0), (-1, 0), 9),
+        ("TEXTCOLOR", (0, 0), (-1, 0), HexColor(BRAND["text_secondary"])),
+        ("FONTNAME", (0, 1), (-1, 1), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 1), (-1, 1), 18),
+        ("TEXTCOLOR", (0, 1), (-1, 1), HexColor(BRAND["text_primary"])),
+        ("BACKGROUND", (0, 0), (-1, -1), HexColor(BRAND["table_row_alt"])),
+        ("BOX", (0, 0), (-1, -1), 0.5, HexColor(BRAND["table_border"])),
+        ("LINEBELOW", (0, 0), (-1, 0), 0.5, HexColor(BRAND["table_border"])),
+    ]))
+    elements.append(summary_table)
+    elements.append(Spacer(1, 12))
+
+    # --- Timeline chart ---
+    if not df.empty and df["date"].notna().any():
+        elements.append(Paragraph("Timeline", styles["SectionHeader"]))
+        chart_img = _build_timeline_chart(df, usable_width)
+        elements.append(chart_img)
+        elements.append(Spacer(1, 8))
+
+    # --- Top projects table ---
+    top_projects = (
+        df.groupby("project_name")["outcome"]
+        .value_counts()
+        .unstack(fill_value=0)
+        .assign(total=lambda x: x.sum(axis=1))
+        .sort_values("total", ascending=False)
+        .head(15)
+    )
+
+    if not top_projects.empty:
+        elements.append(Paragraph("Top Projects by Block/Warn Count", styles["SectionHeader"]))
+        tp_header = ["Project", "Block", "Warn", "Total"]
+        tp_rows = [tp_header]
+        for proj_name, row in top_projects.iterrows():
+            tp_rows.append([
+                Paragraph(str(proj_name), styles["CellText"]),
+                str(int(row.get("block", 0))),
+                str(int(row.get("warn", 0))),
+                str(int(row.get("total", 0))),
+            ])
+
+        tp_col_widths = [usable_width * 0.6, usable_width * 0.13, usable_width * 0.13, usable_width * 0.14]
+        tp_table = Table(tp_rows, colWidths=tp_col_widths, repeatRows=1)
+        tp_style = [
+            ("BACKGROUND", (0, 0), (-1, 0), HexColor(BRAND["table_header_bg"])),
+            ("TEXTCOLOR", (0, 0), (-1, 0), HexColor(BRAND["table_header_text"])),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, 0), 8),
+            ("FONTSIZE", (0, 1), (-1, -1), 8),
+            ("ALIGN", (1, 0), (-1, -1), "CENTER"),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("GRID", (0, 0), (-1, -1), 0.5, HexColor(BRAND["table_border"])),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [HexColor(BRAND["white"]), HexColor(BRAND["table_row_alt"])]),
+        ]
+        tp_table.setStyle(TableStyle(tp_style))
+        elements.append(tp_table)
+        elements.append(Spacer(1, 12))
+
+    # --- Detail table ---
+    elements.append(Paragraph("PR Scan Details", styles["SectionHeader"]))
+
+    detail_header = ["Date", "Project", "PR URL", "Scan Result", "Outcome", "Blockers", "Warnings"]
+    detail_rows = [detail_header]
+
+    for _, row in df.iterrows():
+        date_str = row["date"].strftime("%Y-%m-%d %H:%M") if pd.notna(row["date"]) else ""
+        detail_rows.append([
+            date_str,
+            Paragraph(str(row["project_name"]), styles["CellText"]),
+            Paragraph(str(row["pr_url"]), styles["CellText"]),
+            Paragraph(str(row["scan_result_url"]), styles["CellText"]),
+            row["outcome"],
+            str(row["blocker_findings"]),
+            str(row["warning_findings"]),
+        ])
+
+    detail_col_widths = [
+        usable_width * 0.11,  # date
+        usable_width * 0.20,  # project
+        usable_width * 0.25,  # pr url
+        usable_width * 0.25,  # scan result
+        usable_width * 0.07,  # outcome
+        usable_width * 0.06,  # blockers
+        usable_width * 0.06,  # warnings
+    ]
+    detail_table = Table(detail_rows, colWidths=detail_col_widths, repeatRows=1)
+    detail_style = [
+        ("BACKGROUND", (0, 0), (-1, 0), HexColor(BRAND["table_header_bg"])),
+        ("TEXTCOLOR", (0, 0), (-1, 0), HexColor(BRAND["table_header_text"])),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, 0), 7),
+        ("FONTSIZE", (0, 1), (-1, -1), 7),
+        ("ALIGN", (4, 0), (-1, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("GRID", (0, 0), (-1, -1), 0.5, HexColor(BRAND["table_border"])),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [HexColor(BRAND["white"]), HexColor(BRAND["table_row_alt"])]),
+    ]
+    detail_table.setStyle(TableStyle(detail_style))
+    elements.append(detail_table)
+
+    # Build PDF
+    doc.build(elements)
+    return buf.getvalue()
 
 
 def main():
@@ -374,13 +611,26 @@ def main():
     csv_data = filtered.to_csv(index=False)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    st.download_button(
-        label="Download CSV",
-        data=csv_data,
-        file_name=f"pr_block_warn_{st.session_state.namespace}_{ts}.csv",
-        mime="text/csv",
-        use_container_width=True,
-    )
+    ecol1, ecol2 = st.columns(2)
+
+    with ecol1:
+        st.download_button(
+            label="Download CSV",
+            data=csv_data,
+            file_name=f"pr_block_warn_{st.session_state.namespace}_{ts}.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+
+    with ecol2:
+        pdf_data = generate_pdf(filtered, st.session_state.namespace, st.session_state.days)
+        st.download_button(
+            label="Download PDF",
+            data=pdf_data,
+            file_name=f"pr_block_warn_{st.session_state.namespace}_{ts}.pdf",
+            mime="application/pdf",
+            use_container_width=True,
+        )
 
 
 if __name__ == "__main__":
