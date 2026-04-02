@@ -14,6 +14,7 @@ from typing import List, Dict, Any, Optional
 
 import streamlit as st
 import pandas as pd
+import altair as alt
 
 
 UI_BASE = "https://app.endorlabs.com"
@@ -66,6 +67,7 @@ def fetch_enforced_scan_results(namespace: str, days: int) -> List[Dict[str, Any
             "--sort-path", "meta.create_time",
             "--sort-order", "descending",
             "--list-all",
+            "--traverse",
             "-t", "300s",
         ],
         namespace,
@@ -97,8 +99,9 @@ def resolve_project_info(namespace: str, project_uuids: List[str]) -> Dict[str, 
         [
             "api", "list", "-r", "Project",
             "--filter", f"uuid in ['{uuid_list}']",
-            "--field-mask", "uuid,spec.git.full_name,spec.git.http_clone_url",
+            "--field-mask", "uuid,tenant_meta.namespace,spec.git.full_name,spec.git.http_clone_url",
             "--list-all",
+            "--traverse",
         ],
         namespace,
         timeout=120,
@@ -115,6 +118,7 @@ def resolve_project_info(namespace: str, project_uuids: List[str]) -> Dict[str, 
         projects[obj.get("uuid", "")] = {
             "full_name": git.get("full_name", "Unknown"),
             "base_url": base_url,
+            "namespace": obj.get("tenant_meta", {}).get("namespace", ""),
         }
 
     return projects
@@ -152,9 +156,11 @@ def run_analysis(namespace: str, days: int) -> pd.DataFrame:
         sr_uuid = sr.get("uuid", "")
         meta = sr.get("meta", {})
         spec = sr.get("spec", {})
-        ns = sr.get("tenant_meta", {}).get("namespace", namespace)
         project_uuid = meta.get("parent_uuid", "")
-        proj = project_info.get(project_uuid, {"full_name": "Unknown", "base_url": ""})
+        proj = project_info.get(project_uuid, {"full_name": "Unknown", "base_url": "", "namespace": ""})
+
+        # Use the project's namespace for URLs (correct for child namespaces)
+        ns = proj["namespace"] or sr.get("tenant_meta", {}).get("namespace", namespace)
 
         blocking = spec.get("blocking_findings", [])
         warning = spec.get("warning_findings", [])
@@ -213,11 +219,20 @@ def main():
 
         namespace = st.text_input("Namespace", value="", help="Tenant namespace to query")
 
+        lookback_options = {
+            1: "Last 1 day",
+            2: "Last 2 days",
+            3: "Last 3 days",
+            5: "Last 5 days",
+            7: "Last 1 week",
+            14: "Last 2 weeks",
+            21: "Last 3 weeks (max retention)",
+        }
         days = st.selectbox(
             "Lookback period",
-            options=[7, 14, 30, 60, 90],
-            index=2,
-            format_func=lambda d: f"{d} days",
+            options=list(lookback_options.keys()),
+            index=len(lookback_options) - 1,
+            format_func=lambda d: lookback_options[d],
         )
 
         generate = st.button("Generate Report", type="primary", use_container_width=True)
@@ -290,15 +305,32 @@ def main():
         chart_df = filtered.copy()
         chart_df["day"] = chart_df["date"].dt.date
 
-        # Daily counts by outcome
         daily = (
             chart_df.groupby(["day", "outcome"])
             .size()
             .reset_index(name="count")
         )
-        daily_pivot = daily.pivot(index="day", columns="outcome", values="count").fillna(0)
 
-        st.bar_chart(daily_pivot)
+        chart = (
+            alt.Chart(daily)
+            .mark_bar()
+            .encode(
+                x=alt.X("day:T", title="Date"),
+                y=alt.Y("count:Q", title="Count", stack=True),
+                color=alt.Color(
+                    "outcome:N",
+                    scale=alt.Scale(
+                        domain=["block", "warn"],
+                        range=["#d32f2f", "#fbc02d"],
+                    ),
+                    title="Outcome",
+                ),
+                tooltip=["day:T", "outcome:N", "count:Q"],
+            )
+            .properties(height=350)
+        )
+
+        st.altair_chart(chart, use_container_width=True)
 
     # --- Top projects ---
     st.markdown("## Top Projects by Block/Warn Count")

@@ -76,6 +76,7 @@ def get_enforced_scan_results(namespace: str, days: int) -> List[Dict[str, Any]]
             "--sort-path", "meta.create_time",
             "--sort-order", "descending",
             "--list-all",
+            "--traverse",
             "-t", "300s",
         ],
         namespace,
@@ -111,8 +112,9 @@ def get_project_info(namespace: str, project_uuids: List[str]) -> Dict[str, Dict
         [
             "api", "list", "-r", "Project",
             "--filter", f"uuid in ['{uuid_list}']",
-            "--field-mask", "uuid,spec.git.full_name,spec.git.http_clone_url",
+            "--field-mask", "uuid,tenant_meta.namespace,spec.git.full_name,spec.git.http_clone_url",
             "--list-all",
+            "--traverse",
         ],
         namespace,
         timeout=120,
@@ -130,6 +132,7 @@ def get_project_info(namespace: str, project_uuids: List[str]) -> Dict[str, Dict
         projects[obj.get("uuid", "")] = {
             "full_name": git.get("full_name", "Unknown"),
             "base_url": base_url,
+            "namespace": obj.get("tenant_meta", {}).get("namespace", ""),
         }
 
     return projects
@@ -142,7 +145,7 @@ def build_pr_url(base_url: str, pr_number: Optional[str]) -> str:
     return f"{base_url}/pull/{pr_number}"
 
 
-def generate_report(namespace: str, days: int) -> None:
+def generate_report(namespace: str, days: int, outcome_filter: str) -> None:
     """Main report generation logic."""
     # Step 1: Get ScanResults with block/warn (small, targeted query)
     scan_results = get_enforced_scan_results(namespace, days)
@@ -164,13 +167,19 @@ def generate_report(namespace: str, days: int) -> None:
         sr_uuid = sr.get("uuid", "")
         meta = sr.get("meta", {})
         spec = sr.get("spec", {})
-        ns = sr.get("tenant_meta", {}).get("namespace", namespace)
         project_uuid = meta.get("parent_uuid", "")
-        proj = project_info.get(project_uuid, {"full_name": "Unknown", "base_url": ""})
+        proj = project_info.get(project_uuid, {"full_name": "Unknown", "base_url": "", "namespace": ""})
+
+        # Use the project's namespace for URLs (correct for child namespaces)
+        ns = proj["namespace"] or sr.get("tenant_meta", {}).get("namespace", namespace)
 
         blocking = spec.get("blocking_findings", [])
         warning = spec.get("warning_findings", [])
         outcome = "block" if blocking else "warn"
+
+        # Apply outcome filter
+        if outcome_filter != "all" and outcome != outcome_filter:
+            continue
 
         pr_number = extract_pr_number(sr)
 
@@ -185,6 +194,10 @@ def generate_report(namespace: str, days: int) -> None:
             "warning_findings": len(warning),
             "pr_check_conclusion": spec.get("status", ""),
         })
+
+    if not rows:
+        print("No PR scans matching the specified criteria.")
+        return
 
     # Write CSV
     os.makedirs("generated_reports", exist_ok=True)
@@ -213,15 +226,24 @@ def main():
     )
     parser.add_argument("-n", "--namespace", required=True, help="Namespace/tenant to query")
     parser.add_argument(
-        "--days", type=int, default=30,
-        help="Number of days to look back (default: 30)"
+        "--days", type=int, default=21,
+        help="Number of days to look back (default: 21)"
+    )
+    parser.add_argument(
+        "--outcome", choices=["all", "block", "warn"], default="all",
+        help="Filter by outcome: all (default), block, or warn"
     )
     args = parser.parse_args()
 
     print(f"PR Block/Warn Report")
     print(f"Namespace: {args.namespace}")
     print(f"Lookback:  {args.days} days")
+    print(f"Outcome:   {args.outcome}")
     print("-" * 50)
+
+    if args.days > 21:
+        print("INFO: PR scan results are retained for 3 weeks (21 days).")
+        print(f"      Requesting {args.days} days, but results beyond 21 days may not be available.\n")
 
     # Check endorctl availability
     try:
@@ -230,7 +252,7 @@ def main():
         print("Error: endorctl is not available. Please ensure it's installed and in your PATH.")
         sys.exit(1)
 
-    generate_report(args.namespace, args.days)
+    generate_report(args.namespace, args.days, args.outcome)
     print("\nDone!")
 
 
