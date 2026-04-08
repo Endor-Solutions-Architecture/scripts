@@ -1,0 +1,80 @@
+name: Endor Labs Scan
+
+# Triggers on pull requests and on merges to the default branch.
+# Replace 'main' with your default branch name if different (e.g. 'master').
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  # ── Full scan on merge to main ─────────────────────────────────────────────
+  # Runs after every merge to keep the platform baseline up to date.
+  full-scan:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Replace with your project's dependency install command.
+      - name: Install dependencies
+        run: npm install
+
+      - name: Install endorctl
+        run: |
+          curl -fsSL https://api.endorlabs.com/download/latest/endorctl_linux_amd64 \
+            -o endorctl && chmod +x endorctl && sudo mv endorctl /usr/local/bin/endorctl
+
+      - name: Endor Labs scan
+        run: |
+          endorctl scan \
+            --enable-github-action-token \
+            --namespace=${{ vars.ENDOR_NAMESPACE }}
+
+  # ── PR scan with interactive triage comment ────────────────────────────────
+  # Runs on pull requests. Posts an interactive findings table that developers
+  # can reply to with /endor fp or /endor accept-risk commands.
+  pr-scan:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Replace with your project's dependency install command.
+      - name: Install dependencies
+        run: npm install
+
+      - name: Install endorctl
+        run: |
+          curl -fsSL https://api.endorlabs.com/download/latest/endorctl_linux_amd64 \
+            -o endorctl && chmod +x endorctl && sudo mv endorctl /usr/local/bin/endorctl
+
+      - name: Endor Labs scan and post triage comment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ENDOR_NAMESPACE: ${{ vars.ENDOR_NAMESPACE }}
+          ENDOR_SCAN_RESULTS: "/tmp/endor-scan.json"
+        run: |
+          endorctl scan \
+            --enable-github-action-token \
+            --pr \
+            --pr-incremental \
+            --enable-pr-comments \
+            --scm-token=${{ secrets.GITHUB_TOKEN }} \
+            --scm-pr-id=${{ github.event.pull_request.number }} \
+            --namespace=${{ vars.ENDOR_NAMESPACE }} \
+            --output-type=json > /tmp/endor-scan.json || true
+
+          python3 scripts/post_triage_comment.py
