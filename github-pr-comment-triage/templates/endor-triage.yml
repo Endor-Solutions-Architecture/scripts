@@ -1,0 +1,48 @@
+name: Endor Labs Triage Handler
+
+# Triggers whenever a comment is created on a pull request.
+# Only runs when the comment contains a /endor command.
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  triage:
+    if: |
+      github.event.issue.pull_request != null &&
+      (contains(github.event.comment.body, '/endor fp') ||
+       contains(github.event.comment.body, '/endor accept-risk'))
+
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: write
+      id-token: write
+
+    steps:
+      - name: Get PR branch
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          branch=$(gh pr view ${{ github.event.issue.number }} \
+            --repo ${{ github.repository }} --json headRefName -q .headRefName)
+          echo "branch=$branch" >> $GITHUB_OUTPUT
+
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.pr.outputs.branch }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Install endorctl
+        run: |
+          curl -fsSL https://api.endorlabs.com/download/latest/endorctl_linux_amd64 \
+            -o endorctl && chmod +x endorctl && sudo mv endorctl /usr/local/bin/endorctl
+
+      - name: Handle triage command
+        env:
+          ENDOR_NAMESPACE: ${{ vars.ENDOR_NAMESPACE }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/handle_triage_command.py
