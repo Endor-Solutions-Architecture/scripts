@@ -5,7 +5,7 @@ const path = require('path');
 require('dotenv').config();
 
 // Configuration
-const NAMESPACE = process.env.NAMESPACE;
+const ENDOR_NAMESPACE = process.env.ENDOR_NAMESPACE;
 const REPORTS_DIR = 'generated_reports';
 
 // Helper function to process SBOM components
@@ -50,8 +50,8 @@ async function main() {
         process.exit(1);
     }
 
-    if (!NAMESPACE) {
-        console.error('Error: NAMESPACE must be set in .env file');
+    if (!ENDOR_NAMESPACE) {
+        console.error('Error: ENDOR_NAMESPACE must be set in .env file');
         process.exit(1);
     }
 
@@ -66,7 +66,7 @@ async function main() {
         
         // Get all projects
         console.log('Fetching projects...');
-        const projectsResponse = await sdk.projects.getAllProjects(NAMESPACE);
+        const projectsResponse = await sdk.projects.getAllProjects(ENDOR_NAMESPACE);
         const projects = projectsResponse.list?.objects || [];
         
         console.log(`Found ${projects.length} projects. Fetching SBOM data...`);
@@ -101,7 +101,7 @@ async function main() {
         
         // Write results to CSV
         const timestamp = getFormattedTimestamp();
-        const filename = `${NAMESPACE}_dependency_license_${timestamp}.csv`;
+        const filename = `${ENDOR_NAMESPACE}_dependency_license_${timestamp}.csv`;
         writeToCSV(Array.from(allComponents.values()), filename);
         
         console.log(`\nProcessing complete. Results written to ${REPORTS_DIR}/${filename}`);
