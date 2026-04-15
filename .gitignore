@@ -175,3 +175,7 @@ export_findings_and_scanresults/.sanity_check_logs/
 export_findings_and_scanresults/sanity_check_report.json
 export_findings_and_scanresults/.quick_check_progress.json
 export_findings_and_scanresults/.quick_check_errors.log
+
+# opengrep_jwk_private_material — generated corpus and OpenGrep debug logs (large / reproducible locally)
+opengrep_jwk_private_material/generated/
+opengrep_jwk_private_material/tmp-logs/

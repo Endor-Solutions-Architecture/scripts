@@ -35,9 +35,9 @@ Rules are organized per language plus JSON and a shared text/config rule. `paths
 
 ## Tests and ground truth
 
-- **Manifest:** `generated/ground-truth-generated.json` (generated; primary label field `expected_match`).
+- **Manifest:** `generated/ground-truth-generated.json` (produced locally; primary label field `expected_match`). The `generated/` tree is **not** committed to this repository (see root `.gitignore`); regenerate it with the corpus generator below.
 - **Invariants and acceptance criteria:** `tests/invariants.md`.
-- **Corpus generator:** `scripts/generate_pathological_corpus.py` writes under `generated/` (gitignored by default).
+- **Corpus generator:** `scripts/generate_pathological_corpus.py` writes under `generated/`.
 
 ```bash
 python scripts/generate_pathological_corpus.py --output generated --files-per-language 50
@@ -53,19 +53,22 @@ python scripts/generate_pathological_corpus.py --output generated --files-per-la
 
 **Script:** `scripts/benchmark_rules.py`.
 
-**Reference corpus** for the table below: `generated` — 424 labeled cases, 424 files, ~2014 lines; labels from `ground-truth-generated.json`. Figures are for comparing rule **profiles** on that corpus and machine; they are not a general performance or accuracy claim outside this test setup.
+**Reference corpus** for the table below: `generated/` — 424 labeled cases, 424 files, ~2014 lines; labels from `ground-truth-generated.json`. Figures are for comparing rule **profiles** on that corpus and machine; they are not a general performance or accuracy claim outside this test setup.
 
-| Profile | One full scan (ms) | Findings | Pass 2 P | Pass 2 R | Pass 2 F1 | Benchmark total (ms) |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `rules` | 8661 | 394 | 1.0000 | 0.9091 | 0.9524 | 22982 |
-| `rules-strict-baseline` | 8701 | 332 | 1.0000 | 0.3636 | 0.5333 | 22413 |
-| `rules-strict` | 9777 | 332 | 1.0000 | 0.3636 | 0.5333 | 22764 |
+**Profile summary** (one row per rule pack). **⟨P⟩ ⟨R⟩ ⟨F1⟩** are **unweighted arithmetic means** over the eight per-language buckets in `quality.per_language` from `benchmark_rules.py --two-pass-report` (python, javascript, typescript, java, csharp, go, plaintext, json). **Agnostic P/R/F1** are from `quality.agnostic_pass` (single combined run over the java / csharp / plaintext rule files on the whole tree). Timings from a representative developer machine (Windows; OpenGrep as installed); your numbers will differ.
+
+| Profile | One full scan (ms) | Findings | ⟨P⟩ langs | ⟨R⟩ langs | ⟨F1⟩ langs | Agnostic P | Agnostic R | Agnostic F1 | Two-pass total (ms) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `rules` | 9810 | 394 | 0.9808 | 0.9205 | 0.9479 | 1.0000 | 0.9091 | 0.9524 | 23359 |
+| `rules-strict-baseline` | 10166 | 332 | 0.6023 | 0.4659 | 0.5233 | 0.0000 | 0.0000 | 0.0000 | 23723 |
+| `rules-strict` | 10104 | 332 | 0.6023 | 0.4659 | 0.5233 | 0.0000 | 0.0000 | 0.0000 | 23527 |
 
 **Column definitions**
 
-- **One full scan** — one OpenGrep invocation over the corpus with the full rule set for that profile.
-- **Pass 2 P/R/F1** — metrics for the benchmark’s embedded-text step only (Java, C#, plaintext rule files). Per-language runs are reported separately in JSON as `quality.per_language`. This step is stored as `quality.agnostic_pass`.
-- **Benchmark total** — `benchmark_rules.py --two-pass-report`: sum of per-language timed segments plus the embedded-text segment.
+- **One full scan** — one OpenGrep invocation over the full `generated/` tree with every YAML in the profile directory (`--config` points at the folder).
+- **⟨P⟩ ⟨R⟩ ⟨F1⟩ langs** — mean of per-language precision / recall / F1 from the eight `per_language` scans (see JSON `quality.per_language`).
+- **Agnostic P/R/F1** — metrics for the combined embedded-text pass only (`quality.agnostic_pass`): Java, C#, and plaintext rule files run together on the full corpus.
+- **Two-pass total (ms)** — `performance.total_two_pass_duration_ms`: sum of the eight per-language scan durations plus the agnostic pass duration.
 
 ```bash
 python scripts/benchmark_rules.py --target generated --config-dir rules --two-pass-report
