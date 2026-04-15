@@ -405,7 +405,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Generate pathological JWK corpus.")
     parser.add_argument(
         "--output",
-        default="src/jwk-secrets/generated",
+        default="generated",
         help="Output root for generated corpus",
     )
     parser.add_argument(

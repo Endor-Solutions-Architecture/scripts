@@ -393,12 +393,12 @@ def main() -> None:
     parser.add_argument("--target", required=True, help="Path to scan")
     parser.add_argument(
         "--config-dir",
-        default="src/jwk-secrets/rules",
+        default="rules",
         help="Rules directory for OpenGrep",
     )
     parser.add_argument(
         "--baseline-file",
-        default="src/jwk-secrets/tests/baseline.json",
+        default="tests/baseline.json",
         help="Baseline timing and count JSON",
     )
     parser.add_argument(
@@ -448,11 +448,11 @@ def main() -> None:
     print(json.dumps(summary, indent=2))
 
     if args.check_ground_truth:
-        ground_truth_path = Path("src/jwk-secrets/tests/ground-truth.json")
+        ground_truth_path = Path("tests/ground-truth.json")
         cases = _load_ground_truth(ground_truth_path)
         print("Primary label: expected_match.")
         errors = _validate_ground_truth(
-            fixtures_root=Path("src/jwk-secrets/tests/fixtures"),
+            fixtures_root=Path("tests/fixtures"),
             cases=cases,
             findings=stats["raw_results"],
         )
