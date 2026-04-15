@@ -1,0 +1,1 @@
+blob={"kty":"oct","kid":"missing-k","alg":"HS256"}

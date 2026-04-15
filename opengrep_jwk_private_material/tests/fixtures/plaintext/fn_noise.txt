@@ -1,0 +1,4 @@
+notes:
+  - this file has words like kty and d but not as a JWK object
+  - kty = maybe
+  - d = debug value

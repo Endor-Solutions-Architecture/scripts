@@ -1,0 +1,81 @@
+{
+  "cases": [
+    {
+      "id": "tp-python-rsa-d",
+      "path": "python/tp_python_jwk.py",
+      "rule_id": "python-jwk-private-material",
+      "expected_match": true,
+      "reason": "Python JWT context with RSA private exponent d"
+    },
+    {
+      "id": "fn-python-public-only",
+      "path": "python/fn_python_public_jwk.py",
+      "rule_id": "python-jwk-private-material",
+      "expected_match": false,
+      "reason": "Python JWT context but public-only JWK"
+    },
+    {
+      "id": "tp-javascript-ec-d",
+      "path": "javascript/tp_javascript_jwk.js",
+      "rule_id": "javascript-jwk-private-material",
+      "expected_match": true,
+      "reason": "JavaScript jose context with EC private d"
+    },
+    {
+      "id": "tp-typescript-oct-k",
+      "path": "typescript/tp_typescript_oct.ts",
+      "rule_id": "typescript-jwk-private-material",
+      "expected_match": true,
+      "reason": "TypeScript jose context with oct key k"
+    },
+    {
+      "id": "tp-java-private-json",
+      "path": "java/tp_java_jwk.java",
+      "rule_id": "java-jwk-private-material",
+      "expected_match": true,
+      "reason": "Java JWK parsing context with private key material"
+    },
+    {
+      "id": "tp-csharp-private-json",
+      "path": "csharp/tp_csharp_jwk.cs",
+      "rule_id": "csharp-jwk-private-material",
+      "expected_match": true,
+      "reason": "C# JsonWebKey context with private key material"
+    },
+    {
+      "id": "tp-go-map-rsa-d",
+      "path": "go/tp_go_jwk.go",
+      "rule_id": "go-jwk-private-material",
+      "expected_match": true,
+      "reason": "Go JWT map context with RSA private exponent d"
+    },
+    {
+      "id": "tp-json-private-rsa",
+      "path": "json/tp_private_jwk.json",
+      "rule_id": "json-jwk-private-material",
+      "expected_match": true,
+      "reason": "JSON private RSA JWK with d"
+    },
+    {
+      "id": "fn-json-public-only",
+      "path": "json/fn_public_jwk.json",
+      "rule_id": "json-jwk-private-material",
+      "expected_match": false,
+      "reason": "JSON public-only JWK should not match"
+    },
+    {
+      "id": "tp-plaintext-oct-k",
+      "path": "plaintext/tp_private_jwk.txt",
+      "rule_id": "plaintext-jwk-private-material",
+      "expected_match": true,
+      "reason": "Plaintext fixture contains oct symmetric secret key material"
+    },
+    {
+      "id": "fn-plaintext-noise",
+      "path": "plaintext/fn_noise.txt",
+      "rule_id": "plaintext-jwk-private-material",
+      "expected_match": false,
+      "reason": "Noise text with tokens but not JWK JSON shape"
+    }
+  ]
+}

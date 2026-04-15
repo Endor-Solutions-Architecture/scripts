@@ -1,0 +1,8 @@
+{
+  "kty": "RSA",
+  "kid": "fixture-rsa-1",
+  "alg": "RS256",
+  "n": "hyGJ_i8i3GmMrqqqAcBln3Rgc2xC1AtBZTWs5HPZqtgD",
+  "e": "AQAB",
+  "d": "BH0fuVrVfJ7g9nhi11YNyiMyhQMGoUaScIs86AXVKDCuxBhar15PKf"
+}

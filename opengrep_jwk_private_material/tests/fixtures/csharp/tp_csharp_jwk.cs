@@ -1,0 +1,1 @@
+using Microsoft.IdentityModel.Tokens; public class JwkFixture { public void Parse() { var jwk = "{\"kty\":\"RSA\",\"d\":\"privateExponentValueForFixture\",\"n\":\"modulus\",\"e\":\"AQAB\"}"; var key = new JsonWebKey(jwk); } }

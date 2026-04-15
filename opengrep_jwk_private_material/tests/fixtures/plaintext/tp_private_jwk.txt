@@ -1,0 +1,1 @@
+credentials_bundle={"kty":"oct","kid":"text-fixture-1","k":"c2VjcmV0LXNlZWQtbWF0ZXJpYWwtd2l0aC1lbm91Z2gtbGVuZ3Ro"}

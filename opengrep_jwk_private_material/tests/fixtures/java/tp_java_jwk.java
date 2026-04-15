@@ -1,0 +1,1 @@
+import com.nimbusds.jose.jwk.JWK; class JwkFixture { void parse() throws Exception { String jwk = "{\"kty\":\"RSA\",\"d\":\"privateExponentValueForFixture\",\"n\":\"modulus\",\"e\":\"AQAB\"}"; JWK.parse(jwk); } }

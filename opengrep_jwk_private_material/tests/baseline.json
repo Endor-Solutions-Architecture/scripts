@@ -1,0 +1,9 @@
+{
+  "target": "src\\jwk-secrets\\generated",
+  "duration_ms": 2286,
+  "finding_count": 80,
+  "counts_by_rule": {
+    "json-jwk-private-material": 40,
+    "python-jwk-private-material": 40
+  }
+}
