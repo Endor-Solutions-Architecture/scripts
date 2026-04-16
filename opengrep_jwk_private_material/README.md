@@ -18,7 +18,7 @@ Detection scope (all profiles): private JWK parameters such as `d`, CRT fields `
 
 ## Paths and languages
 
-Rules are organized per language plus JSON and a shared text/config rule. `paths.include` in each YAML lists file extensions; summarized:
+Rules are organized per language plus one **generic** rule (`generic-jwk-secrets.yml`) that covers JSON files and common text/config extensions. `paths.include` in each YAML lists file extensions; summarized:
 
 | Bucket | Extensions |
 | --- | --- |
@@ -28,8 +28,7 @@ Rules are organized per language plus JSON and a shared text/config rule. `paths
 | Java | `.java` |
 | C# | `.cs`, `.csx` |
 | Go | `.go` |
-| JSON | `.json` |
-| Text / config | `.txt`, `.conf`, `.ini`, `.env`, `.yaml`, `.yml`, `.toml`, `.cfg`, `.config`, `.properties`, `.tfvars`, `.tfvars.json` |
+| Generic (JSON + text / config) | `.json`, `.txt`, `.conf`, `.ini`, `.env`, `.yaml`, `.yml`, `.toml`, `.cfg`, `.config`, `.properties`, `.tfvars`, `.tfvars.json` |
 
 ---
 
@@ -55,7 +54,7 @@ python scripts/generate_pathological_corpus.py --output generated --files-per-la
 
 **Reference corpus** for the table below: `generated/` — 424 labeled cases, 424 files, ~2014 lines; labels from `ground-truth-generated.json`. Figures are for comparing rule **profiles** on that corpus and machine; they are not a general performance or accuracy claim outside this test setup.
 
-**Profile summary** (one row per rule pack). **⟨P⟩ ⟨R⟩ ⟨F1⟩** are **unweighted arithmetic means** over the eight per-language buckets in `quality.per_language` from `benchmark_rules.py --two-pass-report` (python, javascript, typescript, java, csharp, go, plaintext, json). **Agnostic P/R/F1** are from `quality.agnostic_pass` (single combined run over the java / csharp / plaintext rule files on the whole tree). Timings from a representative developer machine (Windows; OpenGrep as installed); your numbers will differ.
+**Profile summary** (one row per rule pack). **⟨P⟩ ⟨R⟩ ⟨F1⟩** are **unweighted arithmetic means** over the eight per-language buckets in `quality.per_language` from `benchmark_rules.py --two-pass-report` (python, javascript, typescript, java, csharp, go, plaintext, json — the last two buckets both use `generic-jwk-secrets.yml`). **Agnostic P/R/F1** are from `quality.agnostic_pass` (single combined run over the java, csharp, and generic rule files on the whole tree, including `json/` fixtures). Timings from a representative developer machine (Windows; OpenGrep as installed); your numbers will differ.
 
 | Profile | One full scan (ms) | Findings | ⟨P⟩ langs | ⟨R⟩ langs | ⟨F1⟩ langs | Agnostic P | Agnostic R | Agnostic F1 | Two-pass total (ms) |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -67,7 +66,7 @@ python scripts/generate_pathological_corpus.py --output generated --files-per-la
 
 - **One full scan** — one OpenGrep invocation over the full `generated/` tree with every YAML in the profile directory (`--config` points at the folder).
 - **⟨P⟩ ⟨R⟩ ⟨F1⟩ langs** — mean of per-language precision / recall / F1 from the eight `per_language` scans (see JSON `quality.per_language`).
-- **Agnostic P/R/F1** — metrics for the combined embedded-text pass only (`quality.agnostic_pass`): Java, C#, and plaintext rule files run together on the full corpus.
+- **Agnostic P/R/F1** — metrics for the combined embedded-text pass only (`quality.agnostic_pass`): Java, C#, and generic (JSON + text/config) rule files run together on the full corpus.
 - **Two-pass total (ms)** — `performance.total_two_pass_duration_ms`: sum of the eight per-language scan durations plus the agnostic pass duration.
 
 ```bash

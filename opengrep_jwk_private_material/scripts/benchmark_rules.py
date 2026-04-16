@@ -285,13 +285,13 @@ def _run_two_pass_report(target: Path, config_dir: Path, manifest_name: str) -> 
         "java": "java-jwk-secrets.yml",
         "csharp": "csharp-jwk-secrets.yml",
         "go": "go-jwk-secrets.yml",
-        "plaintext": "plaintext-jwk-secrets.yml",
-        "json": "json-jwk-secrets.yml",
+        "plaintext": "generic-jwk-secrets.yml",
+        "json": "generic-jwk-secrets.yml",
     }
     agnostic_rule_files = [
         "java-jwk-secrets.yml",
         "csharp-jwk-secrets.yml",
-        "plaintext-jwk-secrets.yml",
+        "generic-jwk-secrets.yml",
     ]
 
     per_language_quality: dict[str, Any] = {}
@@ -323,6 +323,7 @@ def _run_two_pass_report(target: Path, config_dir: Path, manifest_name: str) -> 
             "java",
             "csharp",
             "plaintext",
+            "json",
         ))
     ]
 

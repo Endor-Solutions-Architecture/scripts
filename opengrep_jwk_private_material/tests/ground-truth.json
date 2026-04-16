@@ -52,28 +52,28 @@
     {
       "id": "tp-json-private-rsa",
       "path": "json/tp_private_jwk.json",
-      "rule_id": "json-jwk-private-material",
+      "rule_id": "generic-jwk-private-material",
       "expected_match": true,
       "reason": "JSON private RSA JWK with d"
     },
     {
       "id": "fn-json-public-only",
       "path": "json/fn_public_jwk.json",
-      "rule_id": "json-jwk-private-material",
+      "rule_id": "generic-jwk-private-material",
       "expected_match": false,
       "reason": "JSON public-only JWK should not match"
     },
     {
       "id": "tp-plaintext-oct-k",
       "path": "plaintext/tp_private_jwk.txt",
-      "rule_id": "plaintext-jwk-private-material",
+      "rule_id": "generic-jwk-private-material",
       "expected_match": true,
       "reason": "Plaintext fixture contains oct symmetric secret key material"
     },
     {
       "id": "fn-plaintext-noise",
       "path": "plaintext/fn_noise.txt",
-      "rule_id": "plaintext-jwk-private-material",
+      "rule_id": "generic-jwk-private-material",
       "expected_match": false,
       "reason": "Noise text with tokens but not JWK JSON shape"
     }
