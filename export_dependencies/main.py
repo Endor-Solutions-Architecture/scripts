@@ -500,7 +500,36 @@ if __name__ == "__main__":
     parser.add_argument("--token", default=os.getenv("ENDOR_TOKEN"), help="Bearer token (or set ENDOR_TOKEN)")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
     parser.add_argument("--workers", type=int, default=20, help="Number of parallel workers for API calls")
+    parser.add_argument(
+        "--report-type",
+        choices=["full", "licenses", "scores"],
+        default="full",
+        help=(
+            "Controls which columns are written to the CSV. "
+            "'full' (default): all columns — name, package_version_uuid, count, scores, licenses. "
+            "'licenses': name, count, licenses only. "
+            "'scores': name, package_version_uuid, count, overall_score, category scores only."
+        ),
+    )
     args = parser.parse_args()
+
+    _COLUMNS = {
+        "full": [
+            "name", "package_version_uuid", "count",
+            "overall_score",
+            "SCORE_CATEGORY_POPULARITY", "SCORE_CATEGORY_CODE_QUALITY",
+            "SCORE_CATEGORY_SECURITY", "SCORE_CATEGORY_ACTIVITY",
+            "licenses",
+        ],
+        "licenses": ["name", "count", "licenses"],
+        "scores": [
+            "name", "package_version_uuid", "count",
+            "overall_score",
+            "SCORE_CATEGORY_POPULARITY", "SCORE_CATEGORY_CODE_QUALITY",
+            "SCORE_CATEGORY_SECURITY", "SCORE_CATEGORY_ACTIVITY",
+        ],
+    }
+    output_columns = _COLUMNS[args.report_type]
 
     # Validate namespace
     if not args.namespace:
@@ -535,17 +564,7 @@ if __name__ == "__main__":
         # Write header once
         with open(output_path, "w", newline="", encoding="utf-8") as f_header:
             writer = csv.writer(f_header)
-            writer.writerow([
-                "name",
-                "package_version_uuid",
-                "count",
-                "overall_score",
-                "SCORE_CATEGORY_POPULARITY",
-                "SCORE_CATEGORY_CODE_QUALITY",
-                "SCORE_CATEGORY_SECURITY",
-                "SCORE_CATEGORY_ACTIVITY",
-                "licenses"
-            ])
+            writer.writerow(output_columns)
 
         # Lock for safe serialized writes
         write_lock = threading.Lock()
@@ -579,21 +598,22 @@ if __name__ == "__main__":
                     objects = metrics_resp.get("list", {}).get("objects", []) or []
                 metrics = extract_metrics_from_dependency_details(objects)
                 cat_scores = metrics.get("category_scores", {}) or {}
+                all_values = {
+                    "name": row["name"],
+                    "package_version_uuid": row["package_version_uuid"],
+                    "count": row["count"],
+                    "overall_score": metrics.get("overall_score", ""),
+                    "SCORE_CATEGORY_POPULARITY": cat_scores.get("SCORE_CATEGORY_POPULARITY", ""),
+                    "SCORE_CATEGORY_CODE_QUALITY": cat_scores.get("SCORE_CATEGORY_CODE_QUALITY", ""),
+                    "SCORE_CATEGORY_SECURITY": cat_scores.get("SCORE_CATEGORY_SECURITY", ""),
+                    "SCORE_CATEGORY_ACTIVITY": cat_scores.get("SCORE_CATEGORY_ACTIVITY", ""),
+                    "licenses": metrics.get("licenses", ""),
+                }
                 with write_lock:
                     # Append row safely
                     with open(output_path, "a", newline="", encoding="utf-8") as f_out:
                         writer = csv.writer(f_out)
-                        writer.writerow([
-                            row["name"],
-                            row["package_version_uuid"],
-                            row["count"],
-                            metrics.get("overall_score", ""),
-                            cat_scores.get("SCORE_CATEGORY_POPULARITY", ""),
-                            cat_scores.get("SCORE_CATEGORY_CODE_QUALITY", ""),
-                            cat_scores.get("SCORE_CATEGORY_SECURITY", ""),
-                            cat_scores.get("SCORE_CATEGORY_ACTIVITY", ""),
-                            metrics.get("licenses", "")
-                        ])
+                        writer.writerow([all_values[col] for col in output_columns])
                 return len(objects)
             except Exception as ex:
                 if args.debug:
