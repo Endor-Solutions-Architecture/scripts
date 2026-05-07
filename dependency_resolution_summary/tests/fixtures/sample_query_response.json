@@ -1,0 +1,25 @@
+{
+  "uuid": "proj-1",
+  "tenant_meta": {"namespace": "acme.team-a"},
+  "meta": {
+    "name": "https://github.com/acme/repo.git",
+    "tags": [],
+    "references": {
+      "TotalPackagesCount": {"count_response": {"count": 10}},
+      "DependencyResolutionSuccessCount": {"count_response": {"count": 9}},
+      "DependencyResolutionFailedCount": {"count_response": {"count": 1}},
+      "ReachabilitySuccessCount": {"count_response": {"count": 8}},
+      "ReachabilityFailedCount": {"count_response": {"count": 2}},
+      "PackageDetails": {"list": {"objects": [
+        {"spec": {"precomputed_call_graph_state": "PRECOMPUTED_STATE_SUCCESS",
+                   "resolution_errors": {"call_graph": {"error_analysis": [
+                     {"error_category": "ERROR_CATEGORY_DEPENDENCY", "fixable_notes": "Configure registry"}
+                   ]}}}},
+        {"spec": {"resolution_errors": {"resolved": {"error_analysis": [
+                     {"error_category": "ERROR_CATEGORY_TOOLCHAIN",
+                      "matching_snippet": "Toolchain missing. Install it."}
+                   ]}}}}
+      ]}}
+    }
+  }
+}

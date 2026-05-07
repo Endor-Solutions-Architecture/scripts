@@ -1,0 +1,215 @@
+{
+  "tenant_meta": {
+    "namespace": ""
+  },
+  "meta": {
+    "name": "Dependency Resolution and Reachability Summary"
+  },
+  "spec": {
+    "query_spec": {
+      "kind": "Project",
+      "list_parameters": {
+        "filter": "spec.sbom not exists and spec.platform_source != PLATFORM_SOURCE_BINARY",
+        "mask": "tenant_meta.namespace,meta.name,meta.create_time,meta.update_time,processing_status.scan_time,meta.tags,spec.git.http_clone_url",
+        "traverse": true
+      },
+      "references": [
+        {
+          "connect_from": "uuid",
+          "connect_to": "spec.importer_data.project_uuid",
+          "query_spec": {
+            "return_as": "DependencyCount",
+            "kind": "DependencyMetadata",
+            "list_parameters": {
+              "filter": "context.type==CONTEXT_TYPE_MAIN",
+              "count": true,
+              "traverse": true
+            }
+          }
+        },
+        {
+          "connect_from": "uuid",
+          "connect_to": "spec.project_uuid",
+          "query_spec": {
+            "return_as": "AllFindingsCount",
+            "kind": "Finding",
+            "list_parameters": {
+              "filter": "context.type==CONTEXT_TYPE_MAIN and spec.finding_tags not contains [FINDING_TAGS_EXCEPTION]",
+              "count": true,
+              "traverse": true
+            }
+          }
+        },
+        {
+          "connect_from": "uuid",
+          "connect_to": "spec.project_uuid",
+          "query_spec": {
+            "return_as": "VulnerabilityFindingsCount",
+            "kind": "Finding",
+            "list_parameters": {
+              "filter": "context.type==CONTEXT_TYPE_MAIN and spec.finding_categories contains [FINDING_CATEGORY_VULNERABILITY] and spec.finding_tags not contains [FINDING_TAGS_EXCEPTION]",
+              "count": true,
+              "traverse": true
+            }
+          }
+        },
+        {
+          "connect_from": "uuid",
+          "connect_to": "spec.project_uuid",
+          "query_spec": {
+            "return_as": "ReachableFunctionVulnerabilityCount",
+            "kind": "Finding",
+            "list_parameters": {
+              "filter": "context.type==CONTEXT_TYPE_MAIN and spec.finding_categories contains [FINDING_CATEGORY_VULNERABILITY] and spec.finding_tags contains [FINDING_TAGS_REACHABLE_FUNCTION] and spec.finding_tags not contains [FINDING_TAGS_EXCEPTION]",
+              "count": true,
+              "traverse": true
+            }
+          }
+        },
+        {
+          "connect_from": "uuid",
+          "connect_to": "spec.project_uuid",
+          "query_spec": {
+            "return_as": "ReachablePotentialFunctionVulnerabilityCount",
+            "kind": "Finding",
+            "list_parameters": {
+              "filter": "context.type==CONTEXT_TYPE_MAIN and spec.finding_categories contains [FINDING_CATEGORY_VULNERABILITY] and spec.finding_tags contains [FINDING_TAGS_POTENTIALLY_REACHABLE_FUNCTION] and spec.finding_tags not contains [FINDING_TAGS_EXCEPTION]",
+              "count": true,
+              "traverse": true
+            }
+          }
+        },
+        {
+          "connect_from": "uuid",
+          "connect_to": "spec.project_uuid",
+          "query_spec": {
+            "return_as": "UnreachableFunctionVulnerabilityCount",
+            "kind": "Finding",
+            "list_parameters": {
+              "filter": "context.type==CONTEXT_TYPE_MAIN and spec.finding_categories contains [FINDING_CATEGORY_VULNERABILITY] and spec.finding_tags contains [FINDING_TAGS_UNREACHABLE_FUNCTION] and spec.finding_tags not contains [FINDING_TAGS_EXCEPTION]",
+              "count": true,
+              "traverse": true
+            }
+          }
+        },
+        {
+          "connect_from": "uuid",
+          "connect_to": "spec.project_uuid",
+          "query_spec": {
+            "return_as": "ReachableDependencyVulnerabilityCount",
+            "kind": "Finding",
+            "list_parameters": {
+              "filter": "context.type==CONTEXT_TYPE_MAIN and spec.finding_categories contains [FINDING_CATEGORY_VULNERABILITY] and spec.finding_tags contains [FINDING_TAGS_REACHABLE_DEPENDENCY] and spec.finding_tags not contains [FINDING_TAGS_EXCEPTION]",
+              "count": true,
+              "traverse": true
+            }
+          }
+        },
+        {
+          "connect_from": "uuid",
+          "connect_to": "spec.project_uuid",
+          "query_spec": {
+            "return_as": "PotentialReachableDependencyVulnerabilityCount",
+            "kind": "Finding",
+            "list_parameters": {
+              "filter": "context.type==CONTEXT_TYPE_MAIN and spec.finding_categories contains [FINDING_CATEGORY_VULNERABILITY] and spec.finding_tags contains [FINDING_TAGS_POTENTIALLY_REACHABLE_DEPENDENCY] and spec.finding_tags not contains [FINDING_TAGS_EXCEPTION]",
+              "count": true,
+              "traverse": true
+            }
+          }
+        },
+        {
+          "connect_from": "uuid",
+          "connect_to": "spec.project_uuid",
+          "query_spec": {
+            "return_as": "UnReachableDependencyVulnerabilityCount",
+            "kind": "Finding",
+            "list_parameters": {
+              "filter": "context.type==CONTEXT_TYPE_MAIN and spec.finding_categories contains [FINDING_CATEGORY_VULNERABILITY] and spec.finding_tags contains [FINDING_TAGS_UNREACHABLE_DEPENDENCY] and spec.finding_tags not contains [FINDING_TAGS_EXCEPTION]",
+              "count": true,
+              "traverse": true
+            }
+          }
+        },
+        {
+          "connect_from": "uuid",
+          "connect_to": "spec.project_uuid",
+          "query_spec": {
+            "return_as": "TotalPackagesCount",
+            "kind": "PackageVersion",
+            "list_parameters": {
+              "filter": "context.type==CONTEXT_TYPE_MAIN",
+              "count": true,
+              "traverse": true
+            }
+          }
+        },
+        {
+          "connect_from": "uuid",
+          "connect_to": "spec.project_uuid",
+          "query_spec": {
+            "return_as": "DependencyResolutionSuccessCount",
+            "kind": "PackageVersion",
+            "list_parameters": {
+              "filter": "spec.resolution_errors.unresolved not exists and spec.resolution_errors.resolved not exists and context.type==CONTEXT_TYPE_MAIN",
+              "count": true,
+              "traverse": true
+            }
+          }
+        },
+        {
+          "connect_from": "uuid",
+          "connect_to": "spec.project_uuid",
+          "query_spec": {
+            "return_as": "DependencyResolutionFailedCount",
+            "kind": "PackageVersion",
+            "list_parameters": {
+              "filter": "spec.resolution_errors.unresolved exists OR spec.resolution_errors.resolved exists and context.type==CONTEXT_TYPE_MAIN",
+              "count": true,
+              "traverse": true
+            }
+          }
+        },
+        {
+          "connect_from": "uuid",
+          "connect_to": "spec.project_uuid",
+          "query_spec": {
+            "return_as": "ReachabilitySuccessCount",
+            "kind": "PackageVersion",
+            "list_parameters": {
+              "filter": "(spec.resolution_errors.call_graph not exists OR spec.precomputed_call_graph_state == PRECOMPUTED_STATE_SUCCESS) and context.type==CONTEXT_TYPE_MAIN",
+              "count": true,
+              "traverse": true
+            }
+          }
+        },
+        {
+          "connect_from": "uuid",
+          "connect_to": "spec.project_uuid",
+          "query_spec": {
+            "return_as": "ReachabilityFailedCount",
+            "kind": "PackageVersion",
+            "list_parameters": {
+              "filter": "spec.resolution_errors.call_graph exists and spec.precomputed_call_graph_state != PRECOMPUTED_STATE_SUCCESS and context.type==CONTEXT_TYPE_MAIN",
+              "count": true,
+              "traverse": true
+            }
+          }
+        },
+                {
+                  "connect_from": "uuid",
+                  "connect_to": "spec.project_uuid",
+                  "query_spec": {
+                    "return_as": "PackageDetails",
+                    "kind": "PackageVersion",
+                    "list_parameters": {
+                      "filter": "context.type==CONTEXT_TYPE_MAIN",
+                      "mask": "spec.precomputed_call_graph_state,spec.resolution_errors",
+                      "traverse": true
+                    }
+                  }
+                }
+      ]
+    }
+  }
+}
