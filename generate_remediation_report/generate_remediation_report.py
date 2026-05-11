@@ -161,6 +161,7 @@ def fetch_finding_logs(
             "list_parameters.filter": filter_str,
             "list_parameters.mask": FINDING_LOGS_MASK,
             "list_parameters.page_size": str(page_size),
+            "list_parameters.traverse": "true",
         }
         if next_page_id is not None:
             params["list_parameters.page_id"] = next_page_id
