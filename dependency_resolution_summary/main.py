@@ -256,7 +256,7 @@ def fetch_all_projects(
     namespace: str,
     token: str,
     query: dict,
-    page_size: int = 100,
+    page_size: int = 25,
 ) -> list[dict]:
     """POST the graph query and page through results, returning all project rows.
 
@@ -322,8 +322,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--api-url",
                         default=os.environ.get("ENDOR_API_URL", DEFAULT_API_URL),
                         help="Endor API base URL (default: %(default)s)")
-    parser.add_argument("--page-size", type=int, default=100,
-                        help="Graph query page size (default: 100)")
+    parser.add_argument("--page-size", type=int, default=25,
+                        help="Graph query page size (default: 25). Lower values "
+                             "reduce server-side query work per page, which avoids "
+                             "504 timeouts on large namespaces.")
     parser.add_argument("--token", default=None,
                         help="Override token; otherwise resolves from ENDOR_TOKEN "
                              "or `endorctl auth --print-access-token`.")

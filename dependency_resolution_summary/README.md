@@ -44,7 +44,7 @@ Common flags:
 --output-dir DIR     default: ./generated_reports
 --api-url URL        default: https://api.endorlabs.com (or $ENDOR_API_URL)
 --no-pdf             skip PDF, write CSV only
---page-size N        default: 100
+--page-size N        default: 25 (lower if you hit 504 timeouts on large namespaces)
 --token TOKEN        override token (otherwise ENDOR_TOKEN or endorctl)
 ```
 
