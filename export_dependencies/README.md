@@ -30,7 +30,7 @@ Namespace is required:
 ### Usage
 
 ```bash
-# Using a token
+# Using a token (full report — default)
 python main.py --namespace my-namespace --token "$ENDOR_TOKEN"
 
 # Using API credentials
@@ -43,6 +43,27 @@ python main.py -n my-namespace --token "$ENDOR_TOKEN" --debug
 
 # Increase parallelism (default: 20 workers)
 python main.py -n my-namespace --token "$ENDOR_TOKEN" --workers 40
+```
+
+### Report types
+
+Use `--report-type` to control which columns are written to the CSV. The default (`full`) preserves existing behavior.
+
+| `--report-type` | Columns written |
+|---|---|
+| `full` *(default)* | name, package_version_uuid, count, overall_score, SCORE_CATEGORY_POPULARITY, SCORE_CATEGORY_CODE_QUALITY, SCORE_CATEGORY_SECURITY, SCORE_CATEGORY_ACTIVITY, licenses |
+| `licenses` | name, count, licenses |
+| `scores` | name, package_version_uuid, count, overall_score, SCORE_CATEGORY_POPULARITY, SCORE_CATEGORY_CODE_QUALITY, SCORE_CATEGORY_SECURITY, SCORE_CATEGORY_ACTIVITY |
+
+```bash
+# Licenses only
+python main.py --namespace my-namespace --token "$ENDOR_TOKEN" --report-type licenses
+
+# Scores only
+python main.py --namespace my-namespace --token "$ENDOR_TOKEN" --report-type scores
+
+# Full report (explicit — same as omitting --report-type)
+python main.py --namespace my-namespace --token "$ENDOR_TOKEN" --report-type full
 ```
 
 Progress is printed on a single updating line (overwritten in place). With `--debug`, additional diagnostic lines appear during unique-dependency aggregation pagination. For example:
@@ -109,4 +130,101 @@ pypi://urllib3@1.26.20,66d0988469c594feb187c89a,42,6.5,8,5,4,9,BSD-3-Clause:MIT:
 - Ensure the `ENDOR_NAMESPACE` is correct and that your token/credentials are valid.
 - If you encounter intermittent network errors (e.g., temporary DNS failures), try lowering `--workers` to reduce concurrent connections, or simply re-run; the built-in connection pooling and retries already handle many transient issues.
 
+## Claude Code Skill
+
+This script ships with a Claude Code skill (`/export-dependencies`) that lets you run the export interactively without memorizing flags.
+
+### Prerequisites
+
+The skill is available when Claude Code is opened from the `scripts/` directory (where the `.claude/skills/` folder lives). No extra installation is needed.
+
+### How to use
+
+Invoke the skill in Claude Code:
+
+```
+/export-dependencies
+```
+
+Claude will:
+1. Infer the report type from your natural language request, or ask if it's unclear.
+2. Ask for any required parameters you haven't provided (`--namespace`, auth credentials).
+3. Check that dependencies are installed before running.
+4. Execute the script, warn you if the namespace is large (export can take several minutes), and confirm the output file created.
+
+The skill understands natural language — you don't need to remember flags:
+
+| Say… | Runs with |
+|---|---|
+| "fetch all licenses I use in my namespace" | `--report-type licenses` |
+| "fetch Endor scores for all my dependencies" | `--report-type scores` |
+| "fetch all dependencies" or "full report" | `--report-type full` (default) |
+| "fetch all dependencies with licenses and scores" | `--report-type full` |
+
+You can also pass flags directly to skip the prompts:
+
+```
+/export-dependencies --namespace my-namespace --token $ENDOR_TOKEN
+/export-dependencies --namespace my-namespace --token $ENDOR_TOKEN --report-type licenses
+/export-dependencies --namespace my-namespace --token $ENDOR_TOKEN --report-type scores
+/export-dependencies --namespace my-namespace --token $ENDOR_TOKEN --workers 40
+```
+
+### Example sessions
+
+**Licenses only:**
+```
+User: fetch all licenses that I use in my namespace using export dependencies
+
+Claude: I'll run an export with license information only. What's your namespace?
+
+User: acme-corp
+
+Claude: Checking environment…
+  ✓ requests and python-dotenv installed
+  ✓ ENDOR_TOKEN set
+
+Running:
+  python main.py --namespace acme-corp --token "$ENDOR_TOKEN" --report-type licenses
+
+Number of unique dependencies after de-duplication: 3 421 (removed 189 duplicates)
+Fetching dependency metrics in parallel with 20 workers ...
+completed 3421/3421
+
+Script completed.
+Output: generated_reports/unique_dependencies_acme-corp_20260424_091823.csv
+  3 421 unique dependencies written (columns: name, count, licenses).
+```
+
+**Scores only:**
+```
+User: fetch Endor scores for all dependencies in my namespace using export dependencies
+
+Claude: I'll run an export with scorecard scores only. What's your namespace?
+
+User: acme-corp
+
+Running:
+  python main.py --namespace acme-corp --token "$ENDOR_TOKEN" --report-type scores
+
+Script completed.
+Output: generated_reports/unique_dependencies_acme-corp_20260424_092541.csv
+  3 421 unique dependencies written (columns: name, package_version_uuid, count, overall_score, category scores).
+```
+
+**Full report (default):**
+```
+User: fetch all dependencies in my namespace using export dependencies
+
+Running:
+  python main.py --namespace acme-corp --token "$ENDOR_TOKEN"
+
+Script completed.
+Output: generated_reports/unique_dependencies_acme-corp_20260424_093012.csv
+  3 421 unique dependencies written with scorecard scores and license info.
+```
+
+## No Warranty
+
+This software is provided on an "as is" basis, without warranty of any kind. You are solely responsible for determining whether this software is suitable for your use.
 
