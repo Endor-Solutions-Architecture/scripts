@@ -21,7 +21,7 @@ import csv
 import json
 import os
 import sys
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from functools import reduce
 from pathlib import Path
 from typing import Any
@@ -123,12 +123,31 @@ def authenticate(api_url: str, key: str, secret: str) -> str:
 # Query helpers
 # ---------------------------------------------------------------------------
 
-# Hardcoded date windows that match the ewok query JSON byte-for-byte. The
-# original ewok query has these baked in (no runtime date logic anywhere in
-# ewok), so the no-flags behavior here is intentionally identical: same
-# inputs in, same outputs out, for side-by-side comparison.
-EWOK_FINDINGS_WINDOW = ("2025-12-01", "2025-12-31")
-EWOK_LAST_PERIOD_WINDOW = ("2026-02-01", "2026-02-28")
+# Default reporting window: the trailing 30 days ending today.
+#
+# Rationale: when the report is run on the 1st of a month, this approximates
+# "everything that happened in the previous month" (e.g. running on June 1
+# yields a May 2 .. June 1 window). The same window is applied to both the
+# finding-count references and the LastPeriodScanResult reference so the
+# whole CSV speaks about the same time slice. Override with --start-date /
+# --end-date / --month if you need a different range.
+DEFAULT_WINDOW_DAYS = 30
+
+
+def _default_window(today: date | None = None) -> tuple[str, str]:
+    today = today or date.today()
+    start = today - timedelta(days=DEFAULT_WINDOW_DAYS)
+    return start.isoformat(), today.isoformat()
+
+
+def _iso_date(value: str) -> str:
+    """Validate ``YYYY-MM-DD`` and return it as a normalized ISO date string."""
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").date().isoformat()
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            f"Expected YYYY-MM-DD, got '{value}'"
+        ) from exc
 
 
 def _month_range(value: str) -> tuple[str, str]:
@@ -152,18 +171,22 @@ def _load_query_template() -> str:
     ).read_text()
 
 
-def build_query(
-    findings_range: tuple[str, str],
-    last_period_range: tuple[str, str],
-) -> dict:
-    """Render the query template by substituting the date placeholders."""
+def build_query(window: tuple[str, str]) -> dict:
+    """Render the query template by substituting the date placeholders.
+
+    A single ``window`` (start, end) is applied to both the FINDINGS_* and
+    LAST_PERIOD_* placeholders. The template keeps the two as separate
+    placeholders so the JSON file can be hand-edited later if the windows
+    ever need to diverge again.
+    """
+    start, end = window
     template = _load_query_template()
     rendered = (
         template
-        .replace("__FINDINGS_START__", findings_range[0])
-        .replace("__FINDINGS_END__", findings_range[1])
-        .replace("__LAST_PERIOD_START__", last_period_range[0])
-        .replace("__LAST_PERIOD_END__", last_period_range[1])
+        .replace("__FINDINGS_START__", start)
+        .replace("__FINDINGS_END__", end)
+        .replace("__LAST_PERIOD_START__", start)
+        .replace("__LAST_PERIOD_END__", end)
     )
     return json.loads(rendered)
 
@@ -300,26 +323,21 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="Override ENDOR_NAMESPACE from the .env file.",
     )
     parser.add_argument(
-        "--findings-month",
-        type=_month_range,
+        "--start-date",
+        type=_iso_date,
         default=None,
-        metavar="YYYY-MM",
+        metavar="YYYY-MM-DD",
         help=(
-            "Calendar month used for FINDING_LEVEL_* date filters "
-            "(default: %s..%s, mirroring the ewok JSON)."
-            % EWOK_FINDINGS_WINDOW
+            "Start of the reporting window (default: today minus "
+            f"{DEFAULT_WINDOW_DAYS} days)."
         ),
     )
     parser.add_argument(
-        "--last-period-month",
-        type=_month_range,
+        "--end-date",
+        type=_iso_date,
         default=None,
-        metavar="YYYY-MM",
-        help=(
-            "Calendar month used for the LastPeriodScanResult window "
-            "(default: %s..%s, mirroring the ewok JSON)."
-            % EWOK_LAST_PERIOD_WINDOW
-        ),
+        metavar="YYYY-MM-DD",
+        help="End of the reporting window (default: today).",
     )
     parser.add_argument(
         "--month",
@@ -327,8 +345,8 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         default=None,
         metavar="YYYY-MM",
         help=(
-            "Shortcut: set both --findings-month and --last-period-month "
-            "to the same calendar month."
+            "Shortcut: set the window to the first-through-last day of the "
+            "given calendar month. Overridden by --start-date / --end-date."
         ),
     )
     parser.add_argument(
@@ -376,14 +394,19 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
-    findings_range = (
-        args.findings_month or args.month or EWOK_FINDINGS_WINDOW
-    )
-    last_period_range = (
-        args.last_period_month or args.month or EWOK_LAST_PERIOD_WINDOW
-    )
+    default_start, default_end = _default_window()
+    month_start, month_end = args.month or (None, None)
+    start = args.start_date or month_start or default_start
+    end = args.end_date or month_end or default_end
+    if start > end:
+        print(
+            f"ERROR: start date {start} is after end date {end}.",
+            file=sys.stderr,
+        )
+        return 1
+    window = (start, end)
 
-    query = build_query(findings_range, last_period_range)
+    query = build_query(window)
     query.setdefault("tenant_meta", {})["namespace"] = namespace
 
     if args.dump_query:
@@ -416,11 +439,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     print(
-        f"Findings window:     {findings_range[0]} .. {findings_range[1]}",
-        file=sys.stderr,
-    )
-    print(
-        f"Last-period window:  {last_period_range[0]} .. {last_period_range[1]}",
+        f"Reporting window:    {window[0]} .. {window[1]}",
         file=sys.stderr,
     )
     print(
