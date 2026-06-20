@@ -1,0 +1,28 @@
+# Secrets — never commit real credentials
+.env
+.env.local
+.env.*.local
+
+# Generated report output
+generated_reports/
+*.csv
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Editor / OS noise
+.DS_Store
+.idea/
+.vscode/
+*.swp
