@@ -2,9 +2,20 @@
 """
 Tag dependencies in an Endor Labs project.
 
-Reads a text file containing dependency names and versions (one per line in
-``name@version`` format) and applies one or more tags to the matching
-DependencyMetadata records for a given project.
+Two ways to select which dependencies to tag (use either or both):
+
+1. ``--dependencies-file`` — a text file with one ``name@version`` entry per
+   line. Each entry is matched against the project's DependencyMetadata
+   records.
+
+2. ``--packages-paths-file`` — a text file with one package manifest path per
+   line (e.g. ``plugins/store-smb/build.gradle``). The script finds the
+   PackageVersions in the project whose
+   ``spec.resolved_dependencies.dependency_files[].path`` matches an entry,
+   then tags every dependency imported by those packages.
+
+The resulting set of DependencyMetadata records (deduped by UUID) is PATCHed
+to add (or replace) the provided tags.
 """
 
 import argparse
@@ -12,6 +23,7 @@ import json
 import os
 import sys
 from dotenv import load_dotenv
+import pathspec
 import requests
 
 load_dotenv()
@@ -161,6 +173,39 @@ def read_dependencies_file(filename):
     return deps
 
 
+def read_packages_paths_file(filename):
+    """Parse the packages-paths input file.
+
+    Each non-empty, non-comment line should be a path to a package manifest
+    (e.g. ``plugins/store-smb/build.gradle`` or its absolute form). Lines
+    starting with ``#`` are ignored. Duplicates are de-duplicated.
+
+    Returns a list of path strings preserving the original input.
+    """
+    if not os.path.exists(filename):
+        print(f"ERROR: Packages-paths file not found: {filename}")
+        sys.exit(1)
+
+    paths = []
+    seen = set()
+    with open(filename, "r") as f:
+        for raw in f:
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line in seen:
+                continue
+            seen.add(line)
+            paths.append(line)
+
+    if not paths:
+        print(f"ERROR: No package paths found in {filename}.")
+        sys.exit(1)
+
+    print(f"Loaded {len(paths)} package path entries from {filename}")
+    return paths
+
+
 def parse_tags(tag_args):
     """Flatten ``--tag`` arguments (which may be repeated and/or comma-separated) into a clean list."""
     tags = []
@@ -179,6 +224,164 @@ def normalize_package_name(package_name):
     if "://" in package_name:
         return package_name.split("://", 1)[1]
     return package_name
+
+
+def _normalize_path(path):
+    """Normalize a filesystem path for comparison (forward slashes, no leading/trailing slash)."""
+    if not path:
+        return ""
+    return path.replace("\\", "/").strip().rstrip("/").lstrip("/")
+
+
+def compile_path_pattern(pattern):
+    """Compile a single gitwildmatch glob pattern into a ``pathspec.PathSpec``.
+
+    Mirrors endorctl's ``--include-path`` / ``--exclude-path`` glob syntax:
+      * ``src/java/**`` — recursive into all files under ``src/java``
+      * ``plugins/*/build.gradle`` — single segment between
+      * ``**/build.gradle`` — any depth
+      * literal path — exact match (relative to project root)
+    """
+    try:
+        return pathspec.PathSpec.from_lines("gitwildmatch", [pattern])
+    except Exception as e:
+        print(f"ERROR: Invalid path pattern '{pattern}': {e}")
+        sys.exit(1)
+
+
+def path_pattern_matches_any(spec, candidate_paths):
+    """Return True if any candidate path matches the compiled gitwildmatch spec."""
+    for candidate in candidate_paths:
+        if not candidate:
+            continue
+        if spec.match_file(candidate):
+            return True
+    return False
+
+
+def _candidate_paths_for_package_version(pv):
+    """Return the set of normalized paths that a glob pattern is matched against.
+
+    Endorctl globs are anchored at the project root, so the primary match
+    target is ``spec.relative_path``. We also try the absolute paths from
+    ``spec.resolved_dependencies.dependency_files[].path`` (with the leading
+    slash stripped) so users can still paste full or partial absolute paths.
+    """
+    candidates = []
+
+    rel = pv.get("spec", {}).get("relative_path", "") or ""
+    rel = _normalize_path(rel)
+    if rel:
+        candidates.append(rel)
+
+    dep_files = (
+        pv.get("spec", {})
+        .get("resolved_dependencies", {})
+        .get("dependency_files", [])
+        or []
+    )
+    for dep_file in dep_files:
+        dep_path = dep_file.get("path") if isinstance(dep_file, dict) else None
+        norm = _normalize_path(dep_path or "")
+        if norm and norm not in candidates:
+            candidates.append(norm)
+
+    return candidates
+
+
+def fetch_project_package_versions(namespace, token, project_uuid, branch=None, default_branch=None):
+    """Page through PackageVersions for the project in the chosen context.
+
+    Returns the raw PackageVersion objects (with mask covering uuid, name,
+    relative_path, and resolved_dependencies.dependency_files).
+    """
+    url = f"{API_URL}/namespaces/{namespace}/package-versions"
+    headers = {"Authorization": f"Bearer {token}", "Request-Timeout": "600"}
+
+    use_main_context = resolve_use_main_context(branch, default_branch)
+    if use_main_context:
+        context_filter = (
+            f"context.type==CONTEXT_TYPE_MAIN and "
+            f"spec.project_uuid=={project_uuid}"
+        )
+        print("Using main context for package versions")
+    else:
+        context_filter = (
+            f"context.id=={branch} and "
+            f"spec.project_uuid=={project_uuid}"
+        )
+        print(f"Using branch context for package versions: {branch}")
+
+    params = {
+        "list_parameters.filter": context_filter,
+        "list_parameters.mask": (
+            "uuid,meta.name,spec.relative_path,"
+            "spec.resolved_dependencies.dependency_files"
+        ),
+        "list_parameters.traverse": "true",
+        "list_parameters.page_size": 500,
+    }
+
+    all_pvs = []
+    next_page_id = None
+    page_num = 1
+
+    while True:
+        if next_page_id:
+            params["list_parameters.page_id"] = next_page_id
+
+        try:
+            print(f"Fetching package versions page {page_num}...")
+            response = requests.get(url, headers=headers, params=params, timeout=600)
+            response.raise_for_status()
+            data = response.json()
+            objects = data.get("list", {}).get("objects", [])
+            all_pvs.extend(objects)
+
+            next_page_id = data.get("list", {}).get("response", {}).get("next_page_id")
+            if not next_page_id:
+                break
+            page_num += 1
+
+        except requests.exceptions.RequestException as e:
+            print(f"Failed to fetch package versions: {e}")
+            if hasattr(e, "response") and e.response is not None:
+                print(f"Response: {e.response.text}")
+            sys.exit(1)
+
+    print(f"Total package versions fetched for project: {len(all_pvs)}")
+    return all_pvs
+
+
+def match_package_versions_by_paths(package_versions, input_paths):
+    """Find PackageVersions whose paths match any of the input glob patterns.
+
+    Each entry in ``input_paths`` is treated as a gitwildmatch glob (the same
+    syntax used by ``endorctl --include-path`` / ``--exclude-path``). Patterns
+    are matched against ``spec.relative_path`` (project-rooted) and, as a
+    fallback, against each absolute ``dependency_files[].path``.
+
+    Returns ``(matched_pv_uuids, unmatched_paths)`` where matched_pv_uuids is
+    a dict ``{pv_uuid: pv_object}`` and unmatched_paths is the list of input
+    glob patterns that didn't match any package version.
+    """
+    compiled = [(pattern, compile_path_pattern(pattern)) for pattern in input_paths]
+
+    matched = {}
+    matched_inputs = set()
+
+    for pv in package_versions:
+        candidates = _candidate_paths_for_package_version(pv)
+        if not candidates:
+            continue
+
+        for pattern, spec in compiled:
+            if path_pattern_matches_any(spec, candidates):
+                matched[pv["uuid"]] = pv
+                matched_inputs.add(pattern)
+
+    unmatched = [p for p in input_paths if p not in matched_inputs]
+    return matched, unmatched
 
 
 def fetch_project_dependencies(namespace, token, project_uuid, branch=None, default_branch=None):
@@ -202,7 +405,12 @@ def fetch_project_dependencies(namespace, token, project_uuid, branch=None, defa
 
     params = {
         "list_parameters.filter": context_filter,
-        "list_parameters.mask": "uuid,meta.name,meta.tags,spec.dependency_data.package_name,spec.dependency_data.resolved_version",
+        "list_parameters.mask": (
+            "uuid,meta.name,meta.tags,"
+            "spec.dependency_data.package_name,"
+            "spec.dependency_data.resolved_version,"
+            "spec.importer_data.package_version_uuid"
+        ),
         "list_parameters.traverse": "true",
         "list_parameters.page_size": 500,
     }
@@ -253,6 +461,7 @@ def find_matching_dependencies(project_dependencies, requested_deps):
 
     for dep in project_dependencies:
         dep_data = dep.get("spec", {}).get("dependency_data", {}) or {}
+        importer_data = dep.get("spec", {}).get("importer_data", {}) or {}
         package_name_raw = dep_data.get("package_name", "")
         resolved_version = dep_data.get("resolved_version", "") or ""
         package_name = normalize_package_name(package_name_raw)
@@ -277,6 +486,8 @@ def find_matching_dependencies(project_dependencies, requested_deps):
                 "meta_name": dep.get("meta", {}).get("name", ""),
                 "input_name": original_name,
                 "input_version": req_version,
+                "importer_package_version_uuid": importer_data.get("package_version_uuid", ""),
+                "match_source": "dependency",
             })
             matched_inputs.add((req_name_lc, req_version))
 
@@ -287,6 +498,61 @@ def find_matching_dependencies(project_dependencies, requested_deps):
     ]
 
     return matches, unmatched
+
+
+def find_dependencies_by_package_uuids(project_dependencies, package_version_uuids):
+    """Return DependencyMetadata records whose importer is one of the given PackageVersions."""
+    target_uuids = set(uuid for uuid in package_version_uuids if uuid)
+    if not target_uuids:
+        return []
+
+    matches = []
+    for dep in project_dependencies:
+        importer_data = dep.get("spec", {}).get("importer_data", {}) or {}
+        importer_uuid = importer_data.get("package_version_uuid", "")
+        if importer_uuid not in target_uuids:
+            continue
+
+        dep_data = dep.get("spec", {}).get("dependency_data", {}) or {}
+        package_name_raw = dep_data.get("package_name", "")
+        resolved_version = dep_data.get("resolved_version", "") or ""
+        package_name = normalize_package_name(package_name_raw)
+        if not package_name:
+            package_name = normalize_package_name(dep.get("meta", {}).get("name", ""))
+            if "@" in package_name and not resolved_version:
+                package_name, _, resolved_version = package_name.rpartition("@")
+
+        matches.append({
+            "uuid": dep.get("uuid"),
+            "name": package_name,
+            "version": resolved_version,
+            "current_tags": dep.get("meta", {}).get("tags", []) or [],
+            "meta_name": dep.get("meta", {}).get("name", ""),
+            "importer_package_version_uuid": importer_uuid,
+            "match_source": "package_path",
+        })
+
+    return matches
+
+
+def merge_match_lists(*match_lists):
+    """Combine multiple lists of dependency matches, deduplicated by uuid.
+
+    When the same dependency is matched from multiple sources, the source is
+    annotated as ``"both"``.
+    """
+    by_uuid = {}
+    for match_list in match_lists:
+        for match in match_list:
+            uuid = match.get("uuid")
+            if not uuid:
+                continue
+            existing = by_uuid.get(uuid)
+            if existing is None:
+                by_uuid[uuid] = dict(match)
+            elif existing.get("match_source") != match.get("match_source"):
+                existing["match_source"] = "both"
+    return list(by_uuid.values())
 
 
 def patch_dependency_tags(namespace, token, dependency_uuid, new_tags, debug=False):
@@ -337,20 +603,41 @@ def merge_tags(existing_tags, new_tags, replace=False):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Tag dependencies in an Endor Labs project from a text file of name@version entries."
+        description=(
+            "Tag dependencies in an Endor Labs project. Selection can be driven by "
+            "a name@version list (--dependencies-file), a list of package manifest "
+            "paths (--packages-paths-file), or both."
+        )
     )
     parser.add_argument("--project_uuid", type=str, required=True, help="UUID of the project whose dependencies should be tagged.")
     parser.add_argument(
         "--dependencies-file",
         type=str,
-        default="dependencies.txt",
-        help="Path to the file listing dependencies to tag (default: dependencies.txt). One name@version per line.",
+        default=None,
+        help=(
+            "Path to a file listing specific dependencies to tag, one name@version per line. "
+            "If not provided, the script auto-uses ./dependencies.txt when it exists."
+        ),
+    )
+    parser.add_argument(
+        "--packages-paths-file",
+        type=str,
+        default=None,
+        help=(
+            "Path to a file listing package manifest paths or glob patterns (one per line). "
+            "Glob syntax matches endorctl --include-path / --exclude-path (e.g. src/java/**, "
+            "**/build.gradle). All dependencies imported by matched PackageVersions are tagged. "
+            "If not provided, the script auto-uses ./packages_paths.txt when it exists."
+        ),
     )
     parser.add_argument(
         "--tag",
         action="append",
-        required=True,
-        help="Tag to apply. Can be specified multiple times or as a comma-separated list (e.g. --tag risky --tag prod).",
+        default=None,
+        help=(
+            "Tag to apply. Can be specified multiple times or as a comma-separated list "
+            "(e.g. --tag risky --tag prod). Defaults to 'test' if no --tag is supplied."
+        ),
     )
     parser.add_argument("--branch", type=str, help="Branch context to operate on (defaults to main context).")
     parser.add_argument(
@@ -367,13 +654,36 @@ def main():
 
     args = parser.parse_args()
 
-    tags = parse_tags(args.tag)
-    if not tags:
-        print("ERROR: At least one non-empty tag must be provided via --tag.")
-        sys.exit(1)
+    if args.tag is None:
+        tags = ["test"]
+        print("No --tag provided; defaulting to 'test'")
+    else:
+        tags = parse_tags(args.tag)
+        if not tags:
+            print("ERROR: --tag was supplied but resolved to no non-empty values.")
+            sys.exit(1)
     print(f"Tags to apply: {tags}")
 
-    requested_deps = read_dependencies_file(args.dependencies_file)
+    dependencies_file = args.dependencies_file
+    packages_paths_file = args.packages_paths_file
+
+    if not dependencies_file and os.path.exists("dependencies.txt"):
+        dependencies_file = "dependencies.txt"
+        print("No --dependencies-file provided; using ./dependencies.txt")
+
+    if not packages_paths_file and os.path.exists("packages_paths.txt"):
+        packages_paths_file = "packages_paths.txt"
+        print("No --packages-paths-file provided; using ./packages_paths.txt")
+
+    if not dependencies_file and not packages_paths_file:
+        print(
+            "ERROR: At least one of --dependencies-file or --packages-paths-file must be provided "
+            "(or a dependencies.txt / packages_paths.txt file must exist in the current directory)."
+        )
+        sys.exit(1)
+
+    requested_deps = read_dependencies_file(dependencies_file) if dependencies_file else []
+    requested_paths = read_packages_paths_file(packages_paths_file) if packages_paths_file else []
 
     env = get_env_values()
     token = get_token(env["api_key"], env["api_secret"])
@@ -390,6 +700,27 @@ def main():
     if default_branch:
         print(f"Default branch for project: {default_branch}")
 
+    matched_packages = {}
+    unmatched_paths = []
+    if requested_paths:
+        package_versions = fetch_project_package_versions(
+            namespace, token, args.project_uuid, args.branch, default_branch
+        )
+        matched_packages, unmatched_paths = match_package_versions_by_paths(
+            package_versions, requested_paths
+        )
+        print(f"\nMatched {len(matched_packages)} package version(s) against the packages-paths file:")
+        for pv in matched_packages.values():
+            relative_path = pv.get("spec", {}).get("relative_path", "")
+            print(
+                f"  - {pv.get('meta', {}).get('name', pv.get('uuid'))} "
+                f"(relative_path={relative_path or 'n/a'}, uuid={pv.get('uuid')})"
+            )
+        if unmatched_paths:
+            print(f"Warning: {len(unmatched_paths)} package path(s) did not match any package version:")
+            for p in unmatched_paths:
+                print(f"  - {p}")
+
     project_dependencies = fetch_project_dependencies(
         namespace, token, args.project_uuid, args.branch, default_branch
     )
@@ -397,19 +728,34 @@ def main():
         print(f"No dependencies found for project {args.project_uuid}.")
         sys.exit(1)
 
-    matches, unmatched = find_matching_dependencies(project_dependencies, requested_deps)
+    dep_file_matches, unmatched_deps = ([], [])
+    if requested_deps:
+        dep_file_matches, unmatched_deps = find_matching_dependencies(
+            project_dependencies, requested_deps
+        )
+        if unmatched_deps:
+            print(f"\nWarning: {len(unmatched_deps)} requested dependency entries did not match any project dependency:")
+            for name, version in unmatched_deps:
+                label = f"{name}@{version}" if version else name
+                print(f"  - {label}")
 
-    if unmatched:
-        print(f"\nWarning: {len(unmatched)} requested dependency entries did not match any project dependency:")
-        for name, version in unmatched:
-            label = f"{name}@{version}" if version else name
-            print(f"  - {label}")
+    package_path_matches = []
+    if matched_packages:
+        package_path_matches = find_dependencies_by_package_uuids(
+            project_dependencies, list(matched_packages.keys())
+        )
+        print(
+            f"\nFound {len(package_path_matches)} dependency record(s) imported by the "
+            f"{len(matched_packages)} matched package version(s)."
+        )
+
+    matches = merge_match_lists(dep_file_matches, package_path_matches)
 
     if not matches:
         print("\nNo matching dependencies found to tag. Exiting.")
         sys.exit(1)
 
-    print(f"\nFound {len(matches)} dependency record(s) matching the input file.")
+    print(f"\nTotal unique dependency records to process: {len(matches)}")
 
     updated = 0
     skipped = 0
@@ -420,15 +766,16 @@ def main():
         if new_tags == match["current_tags"]:
             skipped += 1
             print(
-                f"  - {match['meta_name'] or match['name']}: tags already up to date "
-                f"({match['current_tags']})"
+                f"  - {match['meta_name'] or match['name']} [{match.get('match_source', '?')}]: "
+                f"tags already up to date ({match['current_tags']})"
             )
             continue
 
         action = "[DRY-RUN]" if args.dry_run else "Updating"
         print(
             f"  {action} {match['meta_name'] or match['name']} "
-            f"(uuid={match['uuid']}): {match['current_tags']} -> {new_tags}"
+            f"[{match.get('match_source', '?')}] (uuid={match['uuid']}): "
+            f"{match['current_tags']} -> {new_tags}"
         )
 
         if args.dry_run:
@@ -446,6 +793,11 @@ def main():
     print(f"  Namespace: {namespace}")
     print(f"  Tags applied: {tags}")
     print(f"  Matched dependencies: {len(matches)}")
+    if requested_deps:
+        print(f"    via --dependencies-file: {len(dep_file_matches)}")
+    if requested_paths:
+        print(f"    via --packages-paths-file: {len(package_path_matches)} "
+              f"(from {len(matched_packages)} package version(s))")
     if args.dry_run:
         print(f"  Would update: {len(matches) - skipped}")
         print(f"  Already up to date: {skipped}")
@@ -453,8 +805,10 @@ def main():
         print(f"  Updated: {updated}")
         print(f"  Already up to date: {skipped}")
         print(f"  Errors: {errors}")
-    if unmatched:
-        print(f"  Unmatched input entries: {len(unmatched)}")
+    if unmatched_deps:
+        print(f"  Unmatched dependency entries: {len(unmatched_deps)}")
+    if unmatched_paths:
+        print(f"  Unmatched package paths: {len(unmatched_paths)}")
 
     sys.exit(1 if errors > 0 else 0)
 

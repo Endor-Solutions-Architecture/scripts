@@ -1,5 +1,6 @@
 .env
 dependencies.txt
+packages_paths.txt
 venv/
 .venv/
 __pycache__/
