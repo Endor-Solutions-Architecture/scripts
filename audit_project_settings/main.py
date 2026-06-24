@@ -3,6 +3,7 @@ import json
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 import requests
 
@@ -175,6 +176,11 @@ def main(argv: list[str] | None = None) -> int:
                         help="Comma-separated policy type aliases or full enum names")
     parser.add_argument("--token", default=None,
                         help="Override bearer token (overrides ENDOR_TOKEN / endorctl)")
+    parser.add_argument(
+        "--output",
+        default=None,
+        help="Save output JSON to this path instead of the default generated_reports/audit_<namespace>_<uuid>.json",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -250,7 +256,15 @@ def main(argv: list[str] | None = None) -> int:
             for ns in output["namespaces"]
         ]
 
-    print(json.dumps(output, indent=2))
+    # print(json.dumps(output, indent=2))
+
+    save_path = args.output or os.path.join(
+        "generated_reports", f"audit_{args.namespace}_{args.project_uuid}.json"
+    )
+    Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(save_path).write_text(json.dumps(output, indent=2))
+    print(f"Output: {save_path}", file=sys.stderr)
+
     return 0
 
 

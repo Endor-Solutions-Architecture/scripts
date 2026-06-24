@@ -365,6 +365,10 @@ def test_main_filters_applies_by_default(capsys, monkeypatch):
     assert "pol_excluded" not in policy_uuids
 
 
+def _project_resp(name="proj", tags=None):
+    return {"meta": {"name": name, "tags": tags or []}, "uuid": "proj-uuid"}
+
+
 def _make_response(status_code, body):
     mock_resp = MagicMock()
     mock_resp.status_code = status_code
@@ -397,3 +401,50 @@ def test_main_sends_policy_type_filter(monkeypatch):
     assert captured_params.get("list_parameters.filter") == (
         "spec.policy_type in [POLICY_TYPE_EXCEPTION, POLICY_TYPE_ADMISSION]"
     )
+
+
+def test_main_saves_to_default_path(monkeypatch, tmp_path):
+    """Without --output, saves to generated_reports/audit_{ns}_{uuid}.json."""
+    monkeypatch.setattr("requests.get", lambda url, **kw: _make_response(
+        200,
+        _project_resp() if "/projects/" in url else {"list": {"objects": [], "response": {}}},
+    ))
+    monkeypatch.setenv("ENDOR_TOKEN", "tok")
+    monkeypatch.chdir(tmp_path)
+
+    main(["acme.backend", "proj-uuid"])
+
+    expected = tmp_path / "generated_reports" / "audit_acme.backend_proj-uuid.json"
+    assert expected.exists()
+    data = json.loads(expected.read_text())
+    assert data["meta"]["namespace"] == "acme.backend"
+
+
+def test_main_respects_output_flag(monkeypatch, tmp_path):
+    """--output <path> writes to that path instead of the default."""
+    monkeypatch.setattr("requests.get", lambda url, **kw: _make_response(
+        200,
+        _project_resp() if "/projects/" in url else {"list": {"objects": [], "response": {}}},
+    ))
+    monkeypatch.setenv("ENDOR_TOKEN", "tok")
+    custom = tmp_path / "my_audit.json"
+
+    main(["acme.backend", "proj-uuid", "--output", str(custom)])
+
+    assert custom.exists()
+    data = json.loads(custom.read_text())
+    assert data["meta"]["namespace"] == "acme.backend"
+
+
+def test_main_creates_output_dir(monkeypatch, tmp_path):
+    """Output parent directory is created automatically."""
+    monkeypatch.setattr("requests.get", lambda url, **kw: _make_response(
+        200,
+        _project_resp() if "/projects/" in url else {"list": {"objects": [], "response": {}}},
+    ))
+    monkeypatch.setenv("ENDOR_TOKEN", "tok")
+    nested = tmp_path / "a" / "b" / "c" / "out.json"
+
+    main(["acme.backend", "proj-uuid", "--output", str(nested)])
+
+    assert nested.exists()
