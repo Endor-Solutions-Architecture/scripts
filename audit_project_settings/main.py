@@ -256,7 +256,7 @@ def main(argv: list[str] | None = None) -> int:
             for ns in output["namespaces"]
         ]
 
-    # print(json.dumps(output, indent=2))
+    print(json.dumps(output, indent=2))
 
     save_path = args.output or os.path.join(
         "generated_reports", f"audit_{args.namespace}_{args.project_uuid}.json"
