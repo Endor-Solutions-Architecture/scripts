@@ -180,3 +180,5 @@ export_findings_and_scanresults/.quick_check_errors.log
 opengrep_jwk_private_material/generated/
 opengrep_jwk_private_material/tmp-logs/
 audit_project_settings/*.json
+
+docs/superpowers/*
