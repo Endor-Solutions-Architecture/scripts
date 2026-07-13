@@ -95,3 +95,38 @@ def model_breakdown(df: pd.DataFrame, days: int, now: Optional[datetime] = None)
     total = grouped["cost"].sum()
     grouped["pct_of_window"] = grouped["cost"] / total if total > 0 else 0.0
     return grouped.sort_values("cost", ascending=False).reset_index(drop=True)
+
+
+def daily_series(df: pd.DataFrame, days: int, now: Optional[datetime] = None) -> pd.DataFrame:
+    """One row per calendar day in the trailing `days` window, zero-filled for days without usage.
+
+    Unlike slice_window (which cuts at an exact sub-day timestamp), this buckets by whole
+    UTC calendar day so every day in the window gets a row — needed for evenly-spaced trend charts.
+    Columns: day (datetime64 UTC, ascending), cost (float).
+    """
+    now = now or datetime.now(timezone.utc)
+    end_day = pd.Timestamp(now).normalize()
+    start_day = end_day - pd.Timedelta(days=days - 1)
+    all_days = pd.date_range(start=start_day, end=end_day, freq="D", tz="UTC")
+
+    if df.empty:
+        daily_cost = pd.Series(dtype=float)
+    else:
+        daily_cost = df.groupby(df["accrued_date"].dt.normalize())["llm_cost"].sum()
+
+    result = pd.DataFrame({"day": all_days})
+    result["cost"] = result["day"].map(daily_cost).fillna(0.0)
+    return result
+
+
+_DAY_LOCATOR_INTERVALS = {1: 1, 7: 1, 14: 2, 28: 4, 60: 7, 90: 10}
+
+
+def pick_day_locator_interval(window_days: int) -> int:
+    """Tick spacing (in days) for a daily trend chart's x-axis, tuned per PRESETS window size.
+
+    Matplotlib's default AutoDateLocator picks sub-day tick spacing for narrow date ranges,
+    which produces duplicate day labels when formatted at day precision. An explicit
+    per-window interval keeps ticks aligned to whole days and readable at every window size.
+    """
+    return _DAY_LOCATOR_INTERVALS.get(window_days, max(1, window_days // 9))
