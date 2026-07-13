@@ -43,6 +43,8 @@ from compute import (
     burn_rate,
     projected_exhaustion_date,
     model_breakdown,
+    daily_series,
+    pick_day_locator_interval,
 )
 
 
@@ -148,10 +150,7 @@ def _fig_to_rl_image(fig, width: float, height: float) -> RLImage:
 
 def _build_trend_chart(usage_df: pd.DataFrame, window_days: int, page_width: float) -> RLImage:
     """Render the daily-cost bar chart for the PDF."""
-    windowed = slice_window(usage_df, window_days)
-    daily = windowed.groupby(windowed["accrued_date"].dt.date)["llm_cost"].sum().reset_index()
-    daily.columns = ["day", "cost"]
-    daily["day"] = pd.to_datetime(daily["day"])
+    daily = daily_series(usage_df, window_days)
 
     fig, ax = plt.subplots(figsize=(page_width / 72, 2.8))
     fig.set_facecolor(BRAND["white"])
@@ -167,6 +166,7 @@ def _build_trend_chart(usage_df: pd.DataFrame, window_days: int, page_width: flo
     ax.spines["left"].set_color("#DDDDDD")
     ax.spines["bottom"].set_color("#DDDDDD")
     ax.tick_params(colors=BRAND["text_secondary"], labelsize=8)
+    ax.xaxis.set_major_locator(mdates.DayLocator(interval=pick_day_locator_interval(window_days)))
     ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %d"))
     plt.setp(ax.get_xticklabels(), rotation=30, ha="right", fontsize=8)
     fig.tight_layout()
@@ -381,11 +381,7 @@ def main():
 
     st.markdown("### Trend")
 
-    daily = windowed_df.copy()
-    daily["day"] = daily["accrued_date"].dt.date
-    daily_totals = daily.groupby("day", as_index=False)["llm_cost"].sum()
-    daily_totals["day"] = pd.to_datetime(daily_totals["day"])
-    daily_totals = daily_totals.sort_values("day")
+    daily_totals = daily_series(usage_df, window_days).rename(columns={"cost": "llm_cost"})
     daily_totals["cumulative"] = daily_totals["llm_cost"].cumsum()
 
     bar = alt.Chart(daily_totals).mark_bar(color="#00D26A").encode(

@@ -134,3 +134,54 @@ def test_model_breakdown_empty_df():
 
     assert result.empty
     assert list(result.columns) == ["llm", "cost", "pct_of_window"]
+
+
+def test_daily_series_zero_fills_missing_days():
+    now = datetime(2026, 7, 10, tzinfo=timezone.utc)
+    df = _df([
+        {"accrued_date": "2026-07-07T00:00:00Z", "llm": "gpt", "llm_cost": 0.29},
+        {"accrued_date": "2026-07-10T00:00:00Z", "llm": "gpt", "llm_cost": 18.55},
+    ])
+
+    result = compute.daily_series(df, days=7, now=now)
+
+    assert len(result) == 7
+    assert list(result["day"].dt.strftime("%Y-%m-%d")) == [
+        "2026-07-04", "2026-07-05", "2026-07-06", "2026-07-07",
+        "2026-07-08", "2026-07-09", "2026-07-10",
+    ]
+    costs = dict(zip(result["day"].dt.strftime("%Y-%m-%d"), result["cost"]))
+    assert costs["2026-07-04"] == 0.0
+    assert costs["2026-07-07"] == 0.29
+    assert costs["2026-07-08"] == 0.0
+    assert costs["2026-07-10"] == 18.55
+
+
+def test_daily_series_single_day_window():
+    now = datetime(2026, 7, 9, tzinfo=timezone.utc)
+    df = _df([{"accrued_date": "2026-07-09T00:00:00Z", "llm": "gpt", "llm_cost": 18.84}])
+
+    result = compute.daily_series(df, days=1, now=now)
+
+    assert len(result) == 1
+    assert result.iloc[0]["day"].strftime("%Y-%m-%d") == "2026-07-09"
+    assert result.iloc[0]["cost"] == 18.84
+
+
+def test_daily_series_empty_df_still_zero_fills_range():
+    now = datetime(2026, 7, 10, tzinfo=timezone.utc)
+    df = pd.DataFrame(columns=["accrued_date", "llm", "llm_cost"])
+
+    result = compute.daily_series(df, days=3, now=now)
+
+    assert len(result) == 3
+    assert (result["cost"] == 0.0).all()
+
+
+def test_pick_day_locator_interval_matches_presets():
+    assert compute.pick_day_locator_interval(1) == 1
+    assert compute.pick_day_locator_interval(7) == 1
+    assert compute.pick_day_locator_interval(14) == 2
+    assert compute.pick_day_locator_interval(28) == 4
+    assert compute.pick_day_locator_interval(60) == 7
+    assert compute.pick_day_locator_interval(90) == 10
