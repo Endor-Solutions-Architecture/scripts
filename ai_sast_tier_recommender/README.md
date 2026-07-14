@@ -20,8 +20,12 @@ strategy in `monorepo/doc/ai-sast-rollout-guide.md`.
 
 ```bash
 pip install -r requirements.txt
-streamlit run dashboard.py
+streamlit run dashboard.py   # serves on http://localhost:8502
 ```
+
+Runs on port **8502** (pinned in `.streamlit/config.toml`) so it can run
+alongside the spend dashboard (`../ai_credit_dashboard`, default 8501). Override
+with `streamlit run dashboard.py --server.port <port>`.
 
 In the sidebar: enter the root tenant namespace, click **Generate/Refresh**,
 then tune the allocation knobs — re-allocation is instant (client-side, no
@@ -41,8 +45,9 @@ re-fetch).
    (`Repository.spec.languages`) is below the threshold (default 50%) go
    straight to **Tier 3** — AI SAST can't help them.
 2. **Value score (0–1):** a tunable blend of commit **activity**
-   (`Metric` TimeTracker), high-severity **findings** count, and
-   **release/production** signal (release tags + monitored-version count).
+   (`Metric` TimeTracker), high-severity **SAST findings** on the default branch
+   (SCA/secrets excluded), and **release/production** signal (release tags +
+   monitored-version count).
 3. **Cost estimate:** a global blended `$/KLOC` (from observed spend ÷ scanned
    KLOC) scaled by repo size and a monitored-version multiplier. See the
    important cost caveats below.
@@ -75,12 +80,12 @@ re-allocated client-side as the knobs change.
 # Reference commands the tool wraps:
 endorctl -n <ns> api list -r EndorLicense --field-mask "spec.quota.ai_limit"
 endorctl -n <ns> api list -r Repository \
-  --field-mask "meta.name,spec.languages,spec.tags,spec.default_branch" --list-all
+  --field-mask "meta.name,meta.parent_uuid,spec.languages,spec.tags,spec.default_branch" --list-all
 endorctl -n <ns> api list -r RepositoryVersion --field-mask "meta.parent_uuid" --list-all
 endorctl -n <ns> api list -r Metric --field-mask "meta.parent_uuid,spec.metric_values" --list-all
 endorctl -n <ns> api list -r Finding \
-  --filter "spec.level == FINDING_LEVEL_CRITICAL or spec.level == FINDING_LEVEL_HIGH" \
-  --field-mask "meta.parent_uuid" --list-all
+  --filter "context.type == CONTEXT_TYPE_MAIN and (spec.level == FINDING_LEVEL_CRITICAL or spec.level == FINDING_LEVEL_HIGH) and spec.finding_categories contains [FINDING_CATEGORY_SAST]" \
+  --field-mask "spec.project_uuid" --list-all
 endorctl -n <ns> api list -r AICreditMetric \
   --filter "spec.accrued_date >= <cutoff>" --field-mask "spec.llm_cost" --list-all
 ```
@@ -93,9 +98,12 @@ endorctl -n <ns> api list -r AICreditMetric \
   tenant-wide figure scaled by size — planning-grade, not exact. Lean on the
   safety margin. When no already-scanned repos are selected, cost falls back to
   coarse size buckets with a low-confidence banner.
-- **Activity & findings are best-effort.** The `Metric` TimeTracker and
-  `Finding` shapes vary; parsing is defensive and defaults those components to
-  0 (flagged) rather than failing the run.
+- **Findings are high/critical SAST on the default branch**, joined via
+  `spec.project_uuid` (the stable key the platform uses), scoped to
+  `context.type == CONTEXT_TYPE_MAIN` so they aren't multiplied across monitored
+  release branches. SCA/secrets are excluded — AI SAST doesn't address them.
+- **Activity is best-effort.** `Metric` has a generic parent, so commit-activity
+  parsing is defensive and defaults to 0 (flagged) rather than failing the run.
 - **Quota must be configured.** With `days == 0` / `max_credit == 0` there is
   no budget to fit (and no usage is metered either) — the tool stops and says so.
 - **Advisory only** — assign the recommended tiers via scan profiles yourself.
