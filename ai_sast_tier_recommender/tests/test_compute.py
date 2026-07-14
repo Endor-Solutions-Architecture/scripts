@@ -20,14 +20,14 @@ def test_normalize_language_unsupported_returns_none():
 
 
 def test_short_repo_name_strips_url_and_git():
-    assert compute.short_repo_name("https://github.com/acacceptance-platform/pr-agent-settings.git") == "pr-agent-settings"
+    assert compute.short_repo_name("https://github.com/acme-platform/pr-agent-settings.git") == "pr-agent-settings"
     assert compute.short_repo_name("org/repo") == "repo"
     assert compute.short_repo_name("just-a-name") == "just-a-name"
     assert compute.short_repo_name("") == ""
 
 
 def test_root_namespace_takes_first_segment():
-    assert compute.root_namespace("american-credit-acceptance.acacceptance-appdev") == "american-credit-acceptance"
+    assert compute.root_namespace("acme-corp.acme-appdev") == "acme-corp"
     assert compute.root_namespace("acme.team.subproject") == "acme"
     assert compute.root_namespace("root-only") == "root-only"
     assert compute.root_namespace("") == ""
@@ -62,6 +62,36 @@ def test_total_supported_kloc_sums_across_repos():
 
 def test_total_supported_kloc_empty_is_zero():
     assert compute.total_supported_kloc([]) == 0.0
+
+
+def test_monitored_version_counts_by_parent_project():
+    versions = [
+        {"meta": {"parent_uuid": "proj-a"}},
+        {"meta": {"parent_uuid": "proj-a"}},
+        {"meta": {"parent_uuid": "proj-b"}},
+        {"meta": {}},  # no parent -> ignored
+    ]
+    assert compute.monitored_version_counts(versions) == {"proj-a": 2, "proj-b": 1}
+
+
+def test_ai_sast_scanned_projects_detects_indexed_or_scanned():
+    versions = [
+        {"meta": {"parent_uuid": "indexed"},
+         "scan_object": {"aisast_status": {"last_full_index_time": "2026-07-01T00:00:00Z"}}},
+        {"meta": {"parent_uuid": "scanned"},
+         "scan_object": {"aisast_status": {"last_scan_state": "AISAST_SCAN_STATE_SCAN_SUCCEEDED"}}},
+        {"meta": {"parent_uuid": "sha-only"},
+         "scan_object": {"aisast_status": {"last_full_index_sha": "abc123"}}},
+        {"meta": {"parent_uuid": "never"},
+         "scan_object": {"aisast_status": {"last_scan_state": "AISAST_SCAN_STATE_UNSPECIFIED"}}},
+        {"meta": {"parent_uuid": "no-status"}, "scan_object": {}},
+        {"meta": {"parent_uuid": "no-scan-object"}},
+    ]
+    assert compute.ai_sast_scanned_projects(versions) == {"indexed", "scanned", "sha-only"}
+
+
+def test_ai_sast_scanned_projects_empty():
+    assert compute.ai_sast_scanned_projects([]) == set()
 
 
 def test_calibrate_cost_per_kloc_none_when_no_data():

@@ -16,7 +16,7 @@ import json
 import subprocess
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 import streamlit as st
@@ -139,22 +139,21 @@ def fetch_repositories(namespace: str) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=["uuid", "project_uuid", "project", "languages", "release_signal"])
 
 
-def fetch_monitored_version_counts(namespace: str) -> Dict[str, int]:
-    """Count of monitored RepositoryVersions per parent **Project** uuid (meta.parent_uuid).
+def fetch_repository_versions(namespace: str) -> List[Dict[str, Any]]:
+    """Raw RepositoryVersion objects with parent Project uuid + AI SAST scan status.
 
-    RepositoryVersion.meta.parent_uuid points at the Project, not the Repository —
-    so callers must join these counts on the repo's project_uuid, not its own uuid.
+    One pull feeds both the monitored-version counts and the AI-SAST-scanned inference
+    (compute.monitored_version_counts / compute.ai_sast_scanned_projects). Counts key on
+    meta.parent_uuid, which points at the Project, not the Repository.
     """
     response = run_endorctl(
-        ["api", "list", "-r", "RepositoryVersion", "--field-mask", "meta.parent_uuid", "--list-all"],
+        [
+            "api", "list", "-r", "RepositoryVersion",
+            "--field-mask", "meta.parent_uuid,scan_object.aisast_status", "--list-all",
+        ],
         namespace,
     )
-    counts: Dict[str, int] = {}
-    for obj in _objects(response):
-        parent = obj.get("meta", {}).get("parent_uuid")
-        if parent:
-            counts[parent] = counts.get(parent, 0) + 1
-    return counts
+    return _objects(response)
 
 
 def fetch_activity(namespace: str) -> Dict[str, float]:
@@ -240,13 +239,20 @@ def fetch_finding_counts(namespace: str) -> Dict[str, int]:
     return counts
 
 
-def assemble_repos(namespace: str) -> pd.DataFrame:
-    """Fetch and join all per-repo signals into the allocator's input frame."""
+def assemble_repos(namespace: str) -> Tuple[pd.DataFrame, set]:
+    """Fetch and join all per-repo signals into the allocator's input frame.
+
+    Returns (repos_df, ai_sast_scanned_project_uuids); the latter drives the
+    "auto-detect scanned repos" button in the cost-calibration sidebar.
+    """
     repos = fetch_repositories(namespace)
     if repos.empty:
-        return repos.assign(monitored_versions=pd.Series(dtype="int"),
-                            activity=pd.Series(dtype="float"), findings=pd.Series(dtype="int"))
-    mv = fetch_monitored_version_counts(namespace)
+        empty = repos.assign(monitored_versions=pd.Series(dtype="int"),
+                             activity=pd.Series(dtype="float"), findings=pd.Series(dtype="int"))
+        return empty, set()
+    versions = fetch_repository_versions(namespace)
+    mv = compute.monitored_version_counts(versions)
+    scanned_project_uuids = compute.ai_sast_scanned_projects(versions)
     activity = fetch_activity(namespace)
     findings = fetch_finding_counts(namespace)
 
@@ -255,7 +261,7 @@ def assemble_repos(namespace: str) -> pd.DataFrame:
     repos["activity"] = repos["uuid"].map(lambda u: activity.get(u, 0.0)).fillna(0.0)
     # Findings join on the project uuid (spec.project_uuid), not the repo's own uuid.
     repos["findings"] = repos["project_uuid"].map(lambda p: findings.get(p, 0)).fillna(0).astype(int)
-    return repos
+    return repos, scanned_project_uuids
 
 
 # --- Presentation ---
@@ -479,8 +485,9 @@ def main():
     st.set_page_config(page_title="AI SAST Tier Recommender", page_icon="\U0001F6E1",
                        layout="wide", initial_sidebar_state="expanded")
 
-    for key in ("repos_df", "license_info", "namespace", "total_spend", "spend_ns"):
+    for key in ("repos_df", "license_info", "namespace", "total_spend", "spend_ns", "scanned_project_uuids"):
         st.session_state.setdefault(key, None)
+    st.session_state.setdefault("scanned_repos", [])
 
     st.title("AI SAST Tier Recommender")
     st.markdown(
@@ -514,9 +521,10 @@ def main():
         # child/app namespace, so calibration spend must be read at the tenant root.
         spend_ns = compute.root_namespace(namespace)
         with st.spinner("Fetching repositories and signals (this can take a minute)..."):
-            repos_df = assemble_repos(namespace)
+            repos_df, scanned_project_uuids = assemble_repos(namespace)
             total_spend = fetch_total_ai_spend(spend_ns)
         st.session_state.repos_df = repos_df
+        st.session_state.scanned_project_uuids = scanned_project_uuids
         st.session_state.license_info = license_info
         st.session_state.namespace = namespace
         st.session_state.total_spend = total_spend
@@ -590,14 +598,33 @@ def main():
         st.markdown("---")
         st.subheader("Cost calibration")
         st.caption(f"Observed AI spend (trailing 180d, from root `{spend_ns}`): ${total_spend:.2f}")
+
+        options = sorted(repos_df["project"].tolist())
+        scanned_pids = st.session_state.get("scanned_project_uuids") or set()
+        inferred_scanned = sorted(repos_df.loc[repos_df["project_uuid"].isin(scanned_pids), "project"].tolist())
+
+        if st.button(
+            f"Auto-detect scanned repos ({len(inferred_scanned)})",
+            use_container_width=True,
+            help="Infers which repos have already been AI SAST scanned from "
+                 "`RepositoryVersion.scan_object.aisast_status` (indexed or successfully scanned) and "
+                 "selects them below. Nothing is scanned or charged — it only reads existing scan state. "
+                 "You can still adjust the selection by hand afterward.",
+        ):
+            st.session_state["scanned_repos"] = inferred_scanned
+            st.rerun()
+
+        # Drop stale selections not in the current options (e.g. after switching namespace)
+        # so the keyed multiselect doesn't raise; safe to set before the widget is created.
+        st.session_state["scanned_repos"] = [r for r in st.session_state.get("scanned_repos", []) if r in options]
         scanned_repos = st.multiselect(
             "Calibrate cost from already-scanned repos",
-            options=sorted(repos_df["project"].tolist()),
-            default=[],
+            options=options,
+            key="scanned_repos",
             format_func=compute.short_repo_name,
             help=(
-                "Pick the repos you've already AI-SAST baselined. The tool sums their "
-                "supported-language size (KLOC) and divides your observed AI spend by it to get a "
+                "Pick the repos you've already AI-SAST baselined (or use **Auto-detect** above). The tool sums "
+                "their supported-language size (KLOC) and divides your observed AI spend by it to get a "
                 "blended **$/KLOC** rate.\n\n"
                 "That rate sets the **Est. Cost** for every repo, which drives **Projected Spend**, "
                 "**Headroom**, and which repos get promoted to Tier 1 (allocation is budget-aware).\n\n"

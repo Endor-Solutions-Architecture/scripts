@@ -84,7 +84,7 @@ def root_namespace(namespace: str) -> str:
     AICreditMetric is a root-only, non-local resource — it's written and read at
     'namespace.Root(...)' and never surfaces from a child/app namespace via
     traversal. Spend calibration must therefore query the root, not the child.
-    'american-credit-acceptance.acacceptance-appdev' -> 'american-credit-acceptance'.
+    'acme-corp.acme-appdev' -> 'acme-corp'.
     """
     return namespace.split(".")[0] if namespace else namespace
 
@@ -92,7 +92,7 @@ def root_namespace(namespace: str) -> str:
 def short_repo_name(name: str) -> str:
     """Last path segment of a repo URL/name, without a trailing '.git' (for legible display).
 
-    'https://github.com/acacceptance-platform/pr-agent-settings.git' -> 'pr-agent-settings'.
+    'https://github.com/acme-platform/pr-agent-settings.git' -> 'pr-agent-settings'.
     Falls back to the original string if there's nothing to trim.
     """
     if not name:
@@ -159,6 +159,39 @@ def calibrate_cost_per_kloc(total_spend: float, total_scanned_kloc: float) -> tu
     rate = total_spend / total_scanned_kloc
     confidence = "medium" if total_scanned_kloc >= 100 else "low"
     return rate, confidence
+
+
+def monitored_version_counts(versions: list[dict]) -> dict[str, int]:
+    """Monitored-version count per parent Project uuid, from RepositoryVersion objects."""
+    counts: dict[str, int] = {}
+    for obj in versions:
+        parent = (obj.get("meta") or {}).get("parent_uuid")
+        if parent:
+            counts[parent] = counts.get(parent, 0) + 1
+    return counts
+
+
+def ai_sast_scanned_projects(versions: list[dict]) -> set[str]:
+    """Parent Project uuids that already have an AI-SAST-indexed or -scanned version.
+
+    Reads RepositoryVersion.scan_object.aisast_status: a version qualifies if it was
+    indexed (last_full_index_time / last_full_index_sha set) or has a completed scan
+    (last_scan_state == AISAST_SCAN_STATE_SCAN_SUCCEEDED). Either means AI SAST credits
+    were spent, which is exactly what makes the repo a valid cost-calibration sample.
+    """
+    scanned: set[str] = set()
+    for obj in versions:
+        parent = (obj.get("meta") or {}).get("parent_uuid")
+        if not parent:
+            continue
+        status = (obj.get("scan_object") or {}).get("aisast_status") or {}
+        if (
+            status.get("last_full_index_time")
+            or status.get("last_full_index_sha")
+            or status.get("last_scan_state") == "AISAST_SCAN_STATE_SCAN_SUCCEEDED"
+        ):
+            scanned.add(parent)
+    return scanned
 
 
 def monitored_version_multiplier(monitored_versions: int, k: float = MONITORED_VERSION_K) -> float:

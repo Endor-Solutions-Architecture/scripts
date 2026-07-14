@@ -62,8 +62,11 @@ Budget, safety margin, language-gate threshold, monitored-version multiplier
 `k`, value weights (activity / findings / release), and cost calibration
 (**multiselect the repos you've already AI-SAST scanned** — the tool sums their
 supported-language size automatically and derives `$/KLOC` from observed spend;
-no manual line-count entry). A **per-tier filter** narrows the recommendations
-table. All controls re-allocate client-side.
+no manual line-count entry). An **Auto-detect scanned repos** button infers that
+selection from `RepositoryVersion.scan_object.aisast_status` (repos that were
+indexed or successfully scanned), so you rarely need to pick them by hand. A
+**per-tier filter** narrows the recommendations table. All controls re-allocate
+client-side.
 
 ## Export
 
@@ -81,7 +84,8 @@ re-allocated client-side as the knobs change.
 endorctl -n <ns> api list -r EndorLicense --field-mask "spec.quota.ai_limit"
 endorctl -n <ns> api list -r Repository \
   --field-mask "meta.name,meta.parent_uuid,spec.languages,spec.tags,spec.default_branch" --list-all
-endorctl -n <ns> api list -r RepositoryVersion --field-mask "meta.parent_uuid" --list-all
+endorctl -n <ns> api list -r RepositoryVersion \
+  --field-mask "meta.parent_uuid,scan_object.aisast_status" --list-all
 endorctl -n <ns> api list -r Metric --field-mask "meta.parent_uuid,spec.metric_values" --list-all
 endorctl -n <ns> api list -r Finding \
   --filter "context.type == CONTEXT_TYPE_MAIN and (spec.level == FINDING_LEVEL_CRITICAL or spec.level == FINDING_LEVEL_HIGH) and spec.finding_categories contains [FINDING_CATEGORY_SAST]" \
