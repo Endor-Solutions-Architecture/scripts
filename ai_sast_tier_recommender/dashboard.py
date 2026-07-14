@@ -203,17 +203,20 @@ def _find_time_tracker(node: Any) -> Optional[Dict[str, Any]]:
 
 
 def fetch_finding_counts(namespace: str) -> Dict[str, int]:
-    """Best-effort count of high-severity findings per repository uuid.
+    """Best-effort count of high/critical findings per **project** uuid (spec.project_uuid).
 
-    Findings taxonomy varies; this is intentionally coarse and defaults to
-    empty (so the findings component scores 0) rather than failing the run.
+    A Finding can be parented to Repository, RepositoryVersion, or PackageVersion,
+    but every finding carries spec.project_uuid — the stable key the platform uses to
+    tie findings back to a project. Joining on that (not meta.parent_uuid) is what makes
+    the count match the platform's per-project totals. Defaults to empty on error so the
+    findings component scores 0 rather than failing the run.
     """
     try:
         response = run_endorctl(
             [
                 "api", "list", "-r", "Finding",
                 "--filter", "spec.level == FINDING_LEVEL_CRITICAL or spec.level == FINDING_LEVEL_HIGH",
-                "--field-mask", "meta.parent_uuid", "--list-all",
+                "--field-mask", "spec.project_uuid", "--list-all",
             ],
             namespace,
         )
@@ -222,9 +225,9 @@ def fetch_finding_counts(namespace: str) -> Dict[str, int]:
 
     counts: Dict[str, int] = {}
     for obj in _objects(response):
-        parent = obj.get("meta", {}).get("parent_uuid")
-        if parent:
-            counts[parent] = counts.get(parent, 0) + 1
+        project_uuid = obj.get("spec", {}).get("project_uuid")
+        if project_uuid:
+            counts[project_uuid] = counts.get(project_uuid, 0) + 1
     return counts
 
 
@@ -241,7 +244,8 @@ def assemble_repos(namespace: str) -> pd.DataFrame:
     # Versions are keyed by the parent Project uuid (shared with the repo), not the repo's own uuid.
     repos["monitored_versions"] = repos["project_uuid"].map(lambda p: mv.get(p, 1)).fillna(1).astype(int)
     repos["activity"] = repos["uuid"].map(lambda u: activity.get(u, 0.0)).fillna(0.0)
-    repos["findings"] = repos["uuid"].map(lambda u: findings.get(u, 0)).fillna(0).astype(int)
+    # Findings join on the project uuid (spec.project_uuid), not the repo's own uuid.
+    repos["findings"] = repos["project_uuid"].map(lambda p: findings.get(p, 0)).fillna(0).astype(int)
     return repos
 
 
