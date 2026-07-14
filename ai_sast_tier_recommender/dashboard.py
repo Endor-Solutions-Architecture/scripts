@@ -28,7 +28,7 @@ import matplotlib.pyplot as plt
 from reportlab.lib.pagesizes import letter, landscape
 from reportlab.lib.units import inch
 from reportlab.lib.colors import HexColor
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image as RLImage, Table, TableStyle
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image as RLImage, Table, TableStyle, PageBreak
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
 import compute
@@ -113,11 +113,15 @@ def _parse_languages(languages_field: Any) -> Dict[str, float]:
 
 
 def fetch_repositories(namespace: str) -> pd.DataFrame:
-    """One row per repository: uuid, project (name), languages (dict), release_signal (tag count)."""
+    """One row per repository: uuid, project_uuid (parent Project), name, languages, release_signal.
+
+    Both Repository and RepositoryVersion are children of the same parent Project
+    (meta.parent_uuid = Project.uuid), so we carry project_uuid to join version counts.
+    """
     response = run_endorctl(
         [
             "api", "list", "-r", "Repository",
-            "--field-mask", "meta.name,spec.languages,spec.tags,spec.default_branch",
+            "--field-mask", "meta.name,meta.parent_uuid,spec.languages,spec.tags,spec.default_branch",
             "--list-all",
         ],
         namespace,
@@ -127,15 +131,20 @@ def fetch_repositories(namespace: str) -> pd.DataFrame:
         spec = obj.get("spec", {})
         rows.append({
             "uuid": obj.get("uuid"),
+            "project_uuid": obj.get("meta", {}).get("parent_uuid"),
             "project": obj.get("meta", {}).get("name", "unknown"),
             "languages": _parse_languages(spec.get("languages")),
             "release_signal": float(len(spec.get("tags") or [])),
         })
-    return pd.DataFrame(rows, columns=["uuid", "project", "languages", "release_signal"])
+    return pd.DataFrame(rows, columns=["uuid", "project_uuid", "project", "languages", "release_signal"])
 
 
 def fetch_monitored_version_counts(namespace: str) -> Dict[str, int]:
-    """Count of monitored RepositoryVersions per repository uuid (meta.parent_uuid)."""
+    """Count of monitored RepositoryVersions per parent **Project** uuid (meta.parent_uuid).
+
+    RepositoryVersion.meta.parent_uuid points at the Project, not the Repository —
+    so callers must join these counts on the repo's project_uuid, not its own uuid.
+    """
     response = run_endorctl(
         ["api", "list", "-r", "RepositoryVersion", "--field-mask", "meta.parent_uuid", "--list-all"],
         namespace,
@@ -229,7 +238,8 @@ def assemble_repos(namespace: str) -> pd.DataFrame:
     activity = fetch_activity(namespace)
     findings = fetch_finding_counts(namespace)
 
-    repos["monitored_versions"] = repos["uuid"].map(lambda u: mv.get(u, 1)).fillna(1).astype(int)
+    # Versions are keyed by the parent Project uuid (shared with the repo), not the repo's own uuid.
+    repos["monitored_versions"] = repos["project_uuid"].map(lambda p: mv.get(p, 1)).fillna(1).astype(int)
     repos["activity"] = repos["uuid"].map(lambda u: activity.get(u, 0.0)).fillna(0.0)
     repos["findings"] = repos["uuid"].map(lambda u: findings.get(u, 0)).fillna(0).astype(int)
     return repos
@@ -245,6 +255,56 @@ BRAND = {
 }
 
 TIER_LABELS = {1: "Tier 1 (AI SAST agent)", 2: "Tier 2 (rules + FP triage)", 3: "Tier 3 (rules only)"}
+
+# Single source of truth for column docs — rendered both in the Streamlit
+# expander and the PDF, so the two can never drift.
+COLUMN_LEGEND: List[tuple] = [
+    ("Repository", "Repo name (shortened from its URL)."),
+    ("Tier", "Recommended tier: 1 = AI SAST agent, 2 = rules + AI FP triage, 3 = rules only."),
+    ("T1 Rank", "For Tier 1 repos, the promotion order by value-per-credit (rank #1 = best value for the cost)."),
+    ("Value", "0–1 security-value score, relative to the other eligible repos in this namespace (a weighted blend "
+              "of commit activity, high-severity findings, and release/production signal). Higher = stronger AI SAST "
+              "candidate. The lowest-scoring eligible repo reads 0, and gated repos are 0."),
+    ("Est. Cost ($)", "Estimated first-window AI credits to run Tier 1 on the repo (supported-language size × "
+                      "calibrated $/KLOC × monitored-version multiplier; coarse size buckets if uncalibrated)."),
+    ("Value/Cost", "Value ÷ Est. Cost: security value per credit spent. This is the ranking key the allocator uses."),
+    ("Supported %", "Share of the repo's code (by bytes) in AI-SAST-supported languages. Below the gate → Tier 3."),
+    ("Monitored Vers.", "Number of monitored branches; each is scanned, so it raises both value and cost."),
+    ("High-sev Findings", "Count of critical/high findings; feeds the Value score and the Tier-2 cost estimate."),
+    ("Rationale", "Plain-language reason for the tier decision."),
+]
+
+# Methodology / disclaimer bullets for the report's disclaimer box.
+METHODOLOGY_NOTES: List[str] = [
+    "<b>Advisory only.</b> This report never applies scan profiles or changes quota — it is a planning aid.",
+    "<b>Language gate.</b> A repo is eligible for Tier 1/2 only if its supported-language byte share ≥ the gate "
+    "threshold; otherwise it is Tier 3, because AI SAST cannot analyze it.",
+    "<b>Value score.</b> A min-max-normalized, weighted blend of commit activity, high-severity finding density, "
+    "and release/production signal — normalized across the eligible repos in this namespace, so it is a "
+    "within-estate ranking, not an absolute rating.",
+    "<b>Cost model.</b> Estimated first-window Tier-1 cost = supported KLOC × $/KLOC rate × monitored-version "
+    "multiplier (1 + k×(versions−1)). The $/KLOC rate is a single tenant-wide blend of ALL AI spend "
+    "(SAST + FP triage + security review) ÷ scanned KLOC — not attributable per feature or per repo.",
+    "<b>Uncalibrated fallback.</b> With no observed spend, costs use coarse size buckets (~$2–$50/repo), which are "
+    "rough and typically under-price large repos.",
+    "<b>Budget packing.</b> Repos are promoted to Tier 1 by descending Value/Cost until budget × (1 − safety margin) "
+    "is committed; the safety margin absorbs estimation error.",
+]
+
+
+def _calibration_sentence(cal: Dict[str, Any]) -> str:
+    """Human-readable calibration provenance, shared by the UI and the PDF."""
+    if cal.get("rate"):
+        return (
+            f"Cost calibration: {cal['confidence']} confidence — ${cal['rate']:.4f}/KLOC blended, derived from "
+            f"{cal['scanned_repos']} already-scanned repo(s) ≈ {cal['scanned_kloc']:,.0f} KLOC and "
+            f"${cal['total_spend']:.2f} observed AI spend at root namespace '{cal['spend_ns']}'. Single tenant-wide "
+            f"rate across all AI features (SAST, FP triage, security review) — not per-feature or per-repo."
+        )
+    return (
+        f"Cost calibration: uncalibrated — no observed AI spend at root namespace '{cal['spend_ns']}', so per-repo "
+        f"costs use coarse size buckets (rough, planning-grade only)."
+    )
 
 
 def _display_frame(allocated: pd.DataFrame) -> pd.DataFrame:
@@ -290,8 +350,20 @@ def _tier_distribution_chart(summary: Dict[str, float], page_width: float) -> RL
     return _fig_to_rl_image(fig, page_width, 2.2 * 72)
 
 
+def _disclaimer_box(flowables: list, usable_width: float) -> Table:
+    """Wrap flowables in a shaded, bordered single-cell box (for the disclaimer/legend)."""
+    box = Table([[flowables]], colWidths=[usable_width])
+    box.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), HexColor(BRAND["table_row_alt"])),
+        ("BOX", (0, 0), (-1, -1), 0.5, HexColor(BRAND["table_border"])),
+        ("LEFTPADDING", (0, 0), (-1, -1), 10), ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+        ("TOPPADDING", (0, 0), (-1, -1), 8), ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+    ]))
+    return box
+
+
 def generate_pdf(namespace: str, summary: Dict[str, float], display_df: pd.DataFrame,
-                  confidence: str, params: AllocationParams) -> bytes:
+                  calibration: Dict[str, Any], params: AllocationParams) -> bytes:
     buf = BytesIO()
     page_w, _ = landscape(letter)
     margin = 0.6 * inch
@@ -303,17 +375,24 @@ def generate_pdf(namespace: str, summary: Dict[str, float], display_df: pd.DataF
     styles.add(ParagraphStyle("Title2", parent=styles["Title"], fontSize=20, textColor=HexColor(BRAND["dark"]), spaceAfter=4))
     styles.add(ParagraphStyle("Subtitle", parent=styles["Normal"], fontSize=10, textColor=HexColor(BRAND["text_secondary"]), spaceAfter=12))
     styles.add(ParagraphStyle("SectionHeader", parent=styles["Heading2"], fontSize=13, textColor=HexColor(BRAND["dark"]), spaceBefore=14, spaceAfter=8))
+    styles.add(ParagraphStyle("Body", parent=styles["Normal"], fontSize=8, leading=11, textColor=HexColor(BRAND["text_primary"]), spaceAfter=4))
+    styles.add(ParagraphStyle("Note", parent=styles["Normal"], fontSize=8, leading=11, textColor=HexColor(BRAND["text_secondary"]), spaceAfter=4))
 
     elements = [Paragraph("AI SAST Tier Recommendations", styles["Title2"])]
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     elements.append(Paragraph(
         f"Namespace: {namespace}  |  Budget: ${params.budget:.2f}  |  Safety margin: {params.safety_margin * 100:.0f}%  |  "
-        f"Cost confidence: {confidence}  |  Generated: {ts}",
+        f"Cost confidence: {calibration.get('confidence', 'none')}  |  Generated: {ts}",
         styles["Subtitle"],
     ))
     divider = Table([[""]], colWidths=[usable_width], rowHeights=[3])
     divider.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), HexColor(BRAND["green"]))]))
     elements.append(divider)
+    elements.append(Spacer(1, 12))
+
+    # Calibration provenance callout — the exact rate and how many repos it came from.
+    elements.append(_disclaimer_box(
+        [Paragraph(_calibration_sentence(calibration), styles["Body"])], usable_width))
     elements.append(Spacer(1, 12))
 
     summary_data = [
@@ -339,18 +418,44 @@ def generate_pdf(namespace: str, summary: Dict[str, float], display_df: pd.DataF
 
     elements.append(Paragraph("Recommendations", styles["SectionHeader"]))
     show = display_df.drop(columns=["Rationale"], errors="ignore")
-    table_rows = [list(show.columns)] + show.astype(str).values.tolist()
-    n = len(show.columns)
-    rec_table = Table(table_rows, colWidths=[usable_width / n] * n, repeatRows=1)
+    cols = list(show.columns)
+
+    # Wrapping only happens for Paragraph cells (ReportLab won't wrap raw strings),
+    # so render every cell as a Paragraph and give the text-heavy columns more width.
+    cell_style = ParagraphStyle("Cell", parent=styles["Normal"], fontSize=7, leading=8,
+                                textColor=HexColor(BRAND["text_primary"]))
+    header_style = ParagraphStyle("CellHeader", parent=styles["Normal"], fontSize=7, leading=8,
+                                  fontName="Helvetica-Bold", textColor=HexColor(BRAND["table_header_text"]))
+
+    weights = [2.4 if c == "Repository" else 1.7 if c == "Tier" else 1.0 for c in cols]
+    total = sum(weights)
+    col_widths = [usable_width * w / total for w in weights]
+
+    header = [Paragraph(str(c), header_style) for c in cols]
+    body = [[Paragraph(str(v), cell_style) for v in row] for row in show.astype(str).values.tolist()]
+    rec_table = Table([header] + body, colWidths=col_widths, repeatRows=1)
     rec_table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), HexColor(BRAND["table_header_bg"])),
-        ("TEXTCOLOR", (0, 0), (-1, 0), HexColor(BRAND["table_header_text"])),
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, -1), 7), ("ALIGN", (1, 0), (-1, -1), "CENTER"),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("GRID", (0, 0), (-1, -1), 0.5, HexColor(BRAND["table_border"])),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("GRID", (0, 0), (-1, -1), 0.5, HexColor(BRAND["table_border"])),
         ("ROWBACKGROUNDS", (0, 1), (-1, -1), [HexColor(BRAND["white"]), HexColor(BRAND["table_row_alt"])]),
+        ("LEFTPADDING", (0, 0), (-1, -1), 3), ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+        ("TOPPADDING", (0, 0), (-1, -1), 2), ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
     ]))
     elements.append(rec_table)
+
+    # Reference appendix: column legend + methodology/disclaimers, on a fresh page.
+    elements.append(PageBreak())
+    elements.append(Paragraph("Column legends", styles["SectionHeader"]))
+    legend_paras = [
+        Paragraph(f"<b>{name}</b> — {desc}", styles["Body"]) for name, desc in COLUMN_LEGEND
+    ]
+    elements.append(_disclaimer_box(legend_paras, usable_width))
+    elements.append(Spacer(1, 12))
+
+    elements.append(Paragraph("Methodology &amp; disclaimers", styles["SectionHeader"]))
+    method_paras = [Paragraph(f"• {note}", styles["Note"]) for note in METHODOLOGY_NOTES]
+    elements.append(_disclaimer_box(method_paras, usable_width))
 
     doc.build(elements)
     return buf.getvalue()
@@ -360,7 +465,7 @@ def main():
     st.set_page_config(page_title="AI SAST Tier Recommender", page_icon="\U0001F6E1",
                        layout="wide", initial_sidebar_state="expanded")
 
-    for key in ("repos_df", "license_info", "namespace", "total_spend"):
+    for key in ("repos_df", "license_info", "namespace", "total_spend", "spend_ns"):
         st.session_state.setdefault(key, None)
 
     st.title("AI SAST Tier Recommender")
@@ -391,13 +496,17 @@ def main():
         if not license_info:
             st.error("Could not read AI credit quota (EndorLicense.spec.quota.ai_limit) for this namespace.")
             st.stop()
+        # AICreditMetric is root-only and non-local — it never surfaces from a
+        # child/app namespace, so calibration spend must be read at the tenant root.
+        spend_ns = compute.root_namespace(namespace)
         with st.spinner("Fetching repositories and signals (this can take a minute)..."):
             repos_df = assemble_repos(namespace)
-            total_spend = fetch_total_ai_spend(namespace)
+            total_spend = fetch_total_ai_spend(spend_ns)
         st.session_state.repos_df = repos_df
         st.session_state.license_info = license_info
         st.session_state.namespace = namespace
         st.session_state.total_spend = total_spend
+        st.session_state.spend_ns = spend_ns
         st.rerun()
 
     if st.session_state.license_info is None:
@@ -408,6 +517,7 @@ def main():
     repos_df = st.session_state.repos_df
     namespace = st.session_state.namespace
     total_spend = st.session_state.total_spend or 0.0
+    spend_ns = st.session_state.spend_ns or namespace
 
     if repos_df is None or repos_df.empty:
         st.warning("No repositories found in this namespace.")
@@ -464,7 +574,7 @@ def main():
         )
         st.markdown("---")
         st.subheader("Cost calibration")
-        st.caption(f"Observed AI spend (trailing 180d): ${total_spend:.2f}")
+        st.caption(f"Observed AI spend (trailing 180d, from root `{spend_ns}`): ${total_spend:.2f}")
         scanned_repos = st.multiselect(
             "Calibrate cost from already-scanned repos",
             options=sorted(repos_df["project"].tolist()),
@@ -486,6 +596,10 @@ def main():
             st.caption(f"Selected: {len(scanned_repos)} repos ≈ {scanned_kloc:,.0f} KLOC supported-language code")
 
     rate, confidence = compute.calibrate_cost_per_kloc(total_spend, scanned_kloc)
+    calibration = {
+        "confidence": confidence, "rate": rate, "scanned_repos": len(scanned_repos),
+        "scanned_kloc": scanned_kloc, "total_spend": total_spend, "spend_ns": spend_ns,
+    }
 
     params = AllocationParams(
         budget=budget, safety_margin=safety_margin,
@@ -499,12 +613,26 @@ def main():
     # --- Summary ---
     st.markdown("## Estate Summary")
     if confidence == "none":
-        st.warning(
-            "**Cost is uncalibrated** — no scanned-KLOC entered, so estimates use coarse size buckets. "
-            "Enter KLOC already scanned in the sidebar (and rely on the safety margin) for a real fit."
-        )
+        if total_spend <= 0:
+            st.warning(
+                f"**Cost is uncalibrated** — no AI spend found at root namespace `{spend_ns}` "
+                f"(observed: ${total_spend:.2f}). `AICreditMetric` is stored **only** at the tenant root "
+                "(and only when the license's `ai_limit.days` > 0), so a child/app namespace always reads $0. "
+                "Estimates fall back to coarse size buckets. Sanity-check with "
+                f"`endorctl -n {spend_ns} api list -r AICreditMetric --count`."
+            )
+        else:
+            st.warning(
+                "**Cost is uncalibrated** — spend was found, but no already-scanned repos are selected "
+                "(or the selected repos have 0 supported-language KLOC). Pick your AI-SAST-baselined repos "
+                "in the sidebar to derive a $/KLOC rate; otherwise estimates use coarse size buckets."
+            )
     else:
-        st.info(f"Cost calibration: **{confidence}** confidence (${rate:.4f}/KLOC blended, tenant-wide — not per-feature or per-repo).")
+        st.info(
+            f"Cost calibration: **{confidence}** confidence — ${rate:.4f}/KLOC blended, derived from "
+            f"**{len(scanned_repos)}** already-scanned repo(s) ≈ {scanned_kloc:,.0f} KLOC and ${total_spend:.2f} "
+            f"observed spend at root `{spend_ns}`. Tenant-wide rate across all AI features — not per-feature or per-repo."
+        )
 
     c1, c2, c3, c4, c5, c6 = st.columns(6)
     c1.metric("Tier 1", summary["tier1_count"])
@@ -530,6 +658,9 @@ def main():
         tier_num = {v: k for k, v in TIER_LABELS.items()}[tier_filter]
         filtered = allocated[allocated["tier"] == tier_num]
 
+    with st.expander("Column legends"):
+        st.markdown("\n".join(f"- **{name}** — {desc}" for name, desc in COLUMN_LEGEND))
+
     display_df = _display_frame(filtered)
     st.caption(f"Showing {len(display_df)} of {len(allocated)} repositories.")
     st.dataframe(display_df, use_container_width=True, height=460)
@@ -549,7 +680,7 @@ def main():
                            file_name=f"ai_sast_tiers_{namespace}_{ts}.csv", mime="text/csv",
                            use_container_width=True)
     with ecol2:
-        pdf_data = generate_pdf(namespace, summary, display_df, confidence, params)
+        pdf_data = generate_pdf(namespace, summary, display_df, calibration, params)
         st.download_button("Download PDF", data=pdf_data,
                            file_name=f"ai_sast_tiers_{namespace}_{ts}.pdf", mime="application/pdf",
                            use_container_width=True)

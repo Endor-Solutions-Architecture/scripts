@@ -78,6 +78,17 @@ def normalize_language(name: str) -> Optional[str]:
     return token if token in SUPPORTED_LANGUAGES else None
 
 
+def root_namespace(namespace: str) -> str:
+    """Tenant root (first path segment) of a namespace.
+
+    AICreditMetric is a root-only, non-local resource — it's written and read at
+    'namespace.Root(...)' and never surfaces from a child/app namespace via
+    traversal. Spend calibration must therefore query the root, not the child.
+    'american-credit-acceptance.acacceptance-appdev' -> 'american-credit-acceptance'.
+    """
+    return namespace.split(".")[0] if namespace else namespace
+
+
 def short_repo_name(name: str) -> str:
     """Last path segment of a repo URL/name, without a trailing '.git' (for legible display).
 

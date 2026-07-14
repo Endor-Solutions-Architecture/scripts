@@ -26,6 +26,13 @@ def test_short_repo_name_strips_url_and_git():
     assert compute.short_repo_name("") == ""
 
 
+def test_root_namespace_takes_first_segment():
+    assert compute.root_namespace("american-credit-acceptance.acacceptance-appdev") == "american-credit-acceptance"
+    assert compute.root_namespace("acme.team.subproject") == "acme"
+    assert compute.root_namespace("root-only") == "root-only"
+    assert compute.root_namespace("") == ""
+
+
 def test_supported_language_share_mixed():
     langs = {"Java": 800.0, "HTML": 200.0}
     assert compute.supported_language_share(langs) == 0.8
