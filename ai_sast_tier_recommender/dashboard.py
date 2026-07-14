@@ -203,19 +203,28 @@ def _find_time_tracker(node: Any) -> Optional[Dict[str, Any]]:
 
 
 def fetch_finding_counts(namespace: str) -> Dict[str, int]:
-    """Best-effort count of high/critical findings per **project** uuid (spec.project_uuid).
+    """Count of high/critical **SAST** findings on the default branch, per project uuid.
 
-    A Finding can be parented to Repository, RepositoryVersion, or PackageVersion,
-    but every finding carries spec.project_uuid — the stable key the platform uses to
-    tie findings back to a project. Joining on that (not meta.parent_uuid) is what makes
-    the count match the platform's per-project totals. Defaults to empty on error so the
-    findings component scores 0 rather than failing the run.
+    Three scoping decisions, each matching how the platform reports findings:
+      - spec.project_uuid: a Finding can be parented to Repository, RepositoryVersion,
+        or PackageVersion, but every finding carries spec.project_uuid — the stable key
+        the platform uses to tie findings to a project (joining on meta.parent_uuid missed
+        the per-branch RepositoryVersion findings).
+      - context.type == CONTEXT_TYPE_MAIN: only the default-branch context, so findings
+        aren't multiplied across a repo's monitored release branches.
+      - FINDING_CATEGORY_SAST: AI SAST (Tier 1) and rule-based SAST (Tier 2) only act on
+        SAST findings — SCA/secrets are irrelevant to the tier decision.
+
+    Defaults to empty on error so the findings component scores 0 rather than failing.
     """
     try:
         response = run_endorctl(
             [
                 "api", "list", "-r", "Finding",
-                "--filter", "spec.level == FINDING_LEVEL_CRITICAL or spec.level == FINDING_LEVEL_HIGH",
+                "--filter",
+                "context.type == CONTEXT_TYPE_MAIN and "
+                "(spec.level == FINDING_LEVEL_CRITICAL or spec.level == FINDING_LEVEL_HIGH) and "
+                "spec.finding_categories contains [FINDING_CATEGORY_SAST]",
                 "--field-mask", "spec.project_uuid", "--list-all",
             ],
             namespace,
@@ -274,7 +283,8 @@ COLUMN_LEGEND: List[tuple] = [
     ("Value/Cost", "Value ÷ Est. Cost: security value per credit spent. This is the ranking key the allocator uses."),
     ("Supported %", "Share of the repo's code (by bytes) in AI-SAST-supported languages. Below the gate → Tier 3."),
     ("Monitored Vers.", "Number of monitored branches; each is scanned, so it raises both value and cost."),
-    ("High-sev Findings", "Count of critical/high findings; feeds the Value score and the Tier-2 cost estimate."),
+    ("High-sev SAST", "Count of critical/high SAST findings on the default branch (SCA and secrets are excluded, "
+                      "since AI SAST doesn't address them). Feeds the Value score and the Tier-2 cost estimate."),
     ("Rationale", "Plain-language reason for the tier decision."),
 ]
 
@@ -283,9 +293,9 @@ METHODOLOGY_NOTES: List[str] = [
     "<b>Advisory only.</b> This report never applies scan profiles or changes quota — it is a planning aid.",
     "<b>Language gate.</b> A repo is eligible for Tier 1/2 only if its supported-language byte share ≥ the gate "
     "threshold; otherwise it is Tier 3, because AI SAST cannot analyze it.",
-    "<b>Value score.</b> A min-max-normalized, weighted blend of commit activity, high-severity finding density, "
-    "and release/production signal — normalized across the eligible repos in this namespace, so it is a "
-    "within-estate ranking, not an absolute rating.",
+    "<b>Value score.</b> A min-max-normalized, weighted blend of commit activity, high-severity SAST finding "
+    "density (default branch, SCA/secrets excluded), and release/production signal — normalized across the "
+    "eligible repos in this namespace, so it is a within-estate ranking, not an absolute rating.",
     "<b>Cost model.</b> Estimated first-window Tier-1 cost = supported KLOC × $/KLOC rate × monitored-version "
     "multiplier (1 + k×(versions−1)). The $/KLOC rate is a single tenant-wide blend of ALL AI spend "
     "(SAST + FP triage + security review) ÷ scanned KLOC — not attributable per feature or per repo.",
@@ -326,7 +336,7 @@ def _display_frame(allocated: pd.DataFrame) -> pd.DataFrame:
     return df.rename(columns={
         "project": "Repository", "tier": "Tier", "rank": "T1 Rank", "value": "Value",
         "est_cost": "Est. Cost ($)", "vc_ratio": "Value/Cost", "supported_share": "Supported %",
-        "monitored_versions": "Monitored Vers.", "findings": "High-sev Findings", "rationale": "Rationale",
+        "monitored_versions": "Monitored Vers.", "findings": "High-sev SAST", "rationale": "Rationale",
     })
 
 
@@ -568,8 +578,9 @@ def main():
         )
         w_findings = st.slider(
             "Findings", 0.0, 1.0, compute.DEFAULT_WEIGHTS["findings"], 0.05,
-            help="Weight of high-severity finding density in the value score — where AI SAST's exploitability "
-                 "reasoning pays off most. Weights are normalized, so only their ratios matter.",
+            help="Weight of high-severity SAST finding density (default branch; SCA/secrets excluded) in the value "
+                 "score — where AI SAST's exploitability reasoning pays off most. Weights are normalized, so only "
+                 "their ratios matter.",
         )
         w_release = st.slider(
             "Release/prod", 0.0, 1.0, compute.DEFAULT_WEIGHTS["release"], 0.05,
