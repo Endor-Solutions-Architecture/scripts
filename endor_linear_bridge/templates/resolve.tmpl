@@ -1,0 +1,27 @@
+{
+  "event": "resolve",
+  "notification": {
+    "uuid": "{{ .RawNotification.Uuid.Value }}",
+    "project_uuid": "{{ .RawNotification.Spec.ProjectUuid.Value }}",
+    "project_name": "{{ jsonEscape .ProjectName.Value }}",
+    "project_app_url": "{{ with .ProjectAppUrl }}{{ .Value }}{{ end }}",
+    "ref_name": "{{ with .RefName }}{{ jsonEscape .Value }}{{ end }}",
+    "context_id": "{{ with .RawNotification.Context }}{{ with .Id }}{{ jsonEscape .Value }}{{ end }}{{ end }}",
+    "policy_uuid": "{{ with .RawNotification.Spec.PolicyUuid }}{{ .Value }}{{ end }}",
+    "policy_name": "{{ with .PolicyName }}{{ jsonEscape .Value }}{{ end }}",
+    "policy_app_url": "{{ with .PolicyAppUrl }}{{ .Value }}{{ end }}",
+    "aggregation": {
+      {{- with .RawNotification.Spec.AggregationDetails }}
+      "type": "{{ .AggregationType }}",
+      "target_name": "{{ with .AggregationTargetName }}{{ jsonEscape .Value }}{{ end }}",
+      "pkg_version_uuid": "{{ with .PkgVersionUuid }}{{ .Value }}{{ end }}"
+      {{- end }}
+    }
+  },
+  "diff": {
+    {{- with .RawNotification.Spec.Diff }}
+    "new_finding_uuids": [{{ range $i, $u := .NewFindingUuids }}{{ if $i }},{{ end }}"{{ $u }}"{{ end }}],
+    "resolved_finding_uuids": [{{ range $i, $u := .ResolvedFindingUuids }}{{ if $i }},{{ end }}"{{ $u }}"{{ end }}]
+    {{- end }}
+  }
+}
