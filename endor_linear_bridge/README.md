@@ -26,6 +26,19 @@ Boards but not Linear. This service fills that gap with no product changes.
 - Descriptions truncate above `max_findings_per_issue` (default 50) with a link
   back to Endor Labs.
 
+### Severity to Linear priority
+
+| Endor severity | Linear priority |
+|---|---|
+| Critical | 1 (Urgent) |
+| High | 2 (High) |
+| Medium | 3 (Medium) |
+| Low | 4 (Low) |
+| Anything else / unrecognized | 0 (No priority) |
+
+Set `priority_from_severity: false` on a team to force every issue to 0
+(no priority) regardless of finding severity.
+
 ## Requirements
 
 - Python 3.12+ (or Docker)
@@ -34,9 +47,11 @@ Boards but not Linear. This service fills that gap with no product changes.
 
 ## Configuration
 
-Copy `config.example.yaml` to `config.yaml` and edit. **Secrets never go in this
-file** — it names environment variables, and the service resolves them at
-startup. A missing or empty variable is a startup failure.
+Copy `endor_linear_bridge/config.example.yaml` to `endor_linear_bridge/config.yaml`
+and edit — both the local and Docker instructions below expect it there.
+**Secrets never go in this file** — it names environment variables, and the
+service resolves them at startup. A missing or empty variable is a startup
+failure.
 
 ```yaml
 linear:
@@ -63,19 +78,24 @@ One new webhook target + one new scoped action policy in Endor + one entry under
 
 ## Running
 
+All commands in this section run from the **repository root** — the directory
+that contains `endor_linear_bridge/` — except the Docker commands, which run
+from inside `endor_linear_bridge/` where `docker-compose.yml` lives.
+
 ### Local
 
 ```bash
-pip install -r requirements.txt
+pip install -r endor_linear_bridge/requirements.txt
 export LINEAR_API_KEY=lin_api_...
 export BRIDGE_BEARER_TOKEN=$(openssl rand -hex 32)
 export ENDOR_HMAC_PLAT=$(openssl rand -hex 32)
-BRIDGE_CONFIG=config.yaml uvicorn endor_linear_bridge.app:app --port 8080
+BRIDGE_CONFIG=endor_linear_bridge/config.yaml uvicorn endor_linear_bridge.app:app --port 8080
 ```
 
 ### Docker
 
 ```bash
+cd endor_linear_bridge
 docker compose up --build
 ```
 
@@ -143,10 +163,14 @@ receives real webhooks from a local scan. The only constraint is that Endor
 requires an `https://` URL, which `mkcert` satisfies by installing a locally
 trusted CA:
 
+Run these from the repository root, so the generated certificate files land
+next to where the `uvicorn` command below expects them:
+
 ```bash
 brew install mkcert
 mkcert -install
 mkcert localhost 127.0.0.1
+# writes ./localhost+1.pem and ./localhost+1-key.pem in the current directory
 
 uvicorn endor_linear_bridge.app:app --host 127.0.0.1 --port 8443 \
   --ssl-certfile localhost+1.pem --ssl-keyfile localhost+1-key.pem
@@ -168,6 +192,10 @@ need a publicly reachable endpoint — a `cloudflared` tunnel to localhost is th
 cheapest way to test that path.
 
 ### Replaying a captured payload
+
+Run from the repository root, like the commands above. `--payload` is resolved
+relative to your current directory, so if `captured.json` was saved elsewhere,
+give a root-relative (or absolute) path to it:
 
 ```bash
 python -m endor_linear_bridge.tools.replay \
@@ -194,8 +222,10 @@ on (notification uuid, event, payload hash). Edit a field to make it a new event
 
 ## Development
 
+Run from the repository root:
+
 ```bash
-pip install -r requirements-dev.txt
+pip install -r endor_linear_bridge/requirements-dev.txt
 pytest endor_linear_bridge/tests -v
 ```
 
