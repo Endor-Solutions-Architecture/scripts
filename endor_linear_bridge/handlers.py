@@ -74,13 +74,114 @@ async def handle_event(
 async def handle_update(
     deps: HandlerDeps, team_key: str, envelope: Envelope, raw_body: bytes
 ) -> None:
-    raise NotImplementedError("implemented in Task 9")
+    runtime = deps.runtimes[team_key]
+    notification = envelope.notification
+    body_hash = store.payload_hash(raw_body)
+
+    # Decide whether this notification is known before opening a write session,
+    # so the create-instead fallback does not nest two sessions on one database.
+    with deps.session_factory() as session:
+        if store.ledger_has(session, notification.uuid, "update", body_hash):
+            logger.info(
+                "duplicate update delivery ignored",
+                extra=_log_context(team_key, envelope),
+            )
+            return
+        row = store.get_notification(session, notification.uuid)
+        is_known = row is not None and row.linear_issue_id is not None
+
+    if not is_known:
+        # Never seen this notification (out-of-order delivery, or the database
+        # was lost). Create the issue from what we have; the description
+        # completes on the next open or update.
+        logger.warning(
+            "update for unknown notification -- creating instead",
+            extra=_log_context(team_key, envelope),
+        )
+        await handle_open(deps, team_key, envelope, raw_body)
+        return
+
+    try:
+        with deps.session_factory() as session:
+            row = store.get_notification(session, notification.uuid)
+
+            # The payload holds only NEW findings, so merge rather than replace.
+            await _apply_current_state(
+                deps, session, runtime, envelope, row, replace=False
+            )
+
+            if envelope.findings:
+                await deps.client.create_comment(
+                    row.linear_issue_id, render.update_comment(envelope.findings)
+                )
+
+            store.record_event(session, notification.uuid, "update", body_hash)
+            session.commit()
+
+    except LinearError as exc:
+        raise TransientFailure(f"Linear call failed: {exc}") from exc
 
 
 async def handle_resolve(
     deps: HandlerDeps, team_key: str, envelope: Envelope, raw_body: bytes
 ) -> None:
-    raise NotImplementedError("implemented in Task 9")
+    runtime = deps.runtimes[team_key]
+    notification = envelope.notification
+    body_hash = store.payload_hash(raw_body)
+
+    try:
+        with deps.session_factory() as session:
+            if store.ledger_has(session, notification.uuid, "resolve", body_hash):
+                logger.info(
+                    "duplicate resolve delivery ignored",
+                    extra=_log_context(team_key, envelope),
+                )
+                return
+
+            row = store.get_notification(session, notification.uuid)
+
+            if row is None or row.status == STATUS_RESOLVED:
+                # Nothing to close. Record the event and return 200 -- a 4xx here
+                # would make Endor mark the whole target as misconfigured.
+                logger.warning(
+                    "resolve for unknown or already-resolved notification",
+                    extra=_log_context(team_key, envelope),
+                )
+                store.record_event(session, notification.uuid, "resolve", body_hash)
+                session.commit()
+                return
+
+            await deps.client.update_issue(
+                row.linear_issue_id, state_id=runtime.close_state_id
+            )
+            await deps.client.create_comment(
+                row.linear_issue_id,
+                render.resolution_comment(datetime.now(timezone.utc)),
+            )
+            store.mark_resolved(session, row)
+            logger.info("resolved sub-issue %s", row.linear_identifier)
+
+            remaining = store.count_unresolved_siblings(
+                session, row.parent_id, notification.uuid
+            )
+            if remaining == 0:
+                parent = session.get(ProjectParent, row.parent_id)
+                if parent is not None and parent.status != STATUS_RESOLVED:
+                    await deps.client.update_issue(
+                        parent.linear_issue_id, state_id=runtime.close_state_id
+                    )
+                    await deps.client.create_comment(
+                        parent.linear_issue_id,
+                        render.resolution_comment(datetime.now(timezone.utc)),
+                    )
+                    store.mark_resolved(session, parent)
+                    logger.info("resolved parent issue %s", parent.linear_identifier)
+
+            store.record_event(session, notification.uuid, "resolve", body_hash)
+            session.commit()
+
+    except LinearError as exc:
+        raise TransientFailure(f"Linear call failed: {exc}") from exc
 
 
 def _log_context(team_key: str, envelope: Envelope) -> dict[str, str]:
