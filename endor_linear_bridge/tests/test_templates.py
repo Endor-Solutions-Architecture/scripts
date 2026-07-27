@@ -40,6 +40,23 @@ FORBIDDEN_UNGUARDED = (
     ".PolicyAppUrl.Value",
     ".ProjectAppUrl.Value",
     ".RefName.Value",
+    # Diff's guarded fields are slices, not .Value-wrapped scalars, and
+    # AggregationDetails' AggregationType is accessed in short form inside
+    # its `with` block -- so these three only appear fully-qualified like
+    # this if the guard around them was dropped.
+    ".RawNotification.Spec.Diff.NewFindingUuids",
+    ".RawNotification.Spec.Diff.ResolvedFindingUuids",
+    ".RawNotification.Spec.AggregationDetails.AggregationType",
+)
+
+# A forbidden-substring check alone can't catch a guard being deleted
+# together with the field access it protected -- these assert the guards
+# are still present. Matched as a substring (not the full `{{- with ... }}`
+# form) so the test survives a whitespace-control tweak that doesn't change
+# semantics.
+REQUIRED_GUARDS = (
+    "with .RawNotification.Spec.AggregationDetails",
+    "with .RawNotification.Spec.Diff",
 )
 
 
@@ -123,6 +140,17 @@ def test_templates_never_access_optional_fields_unguarded(name, forbidden):
     content = (TEMPLATES / name).read_text()
 
     assert forbidden not in content
+
+
+@pytest.mark.parametrize("name", ["open.tmpl", "update.tmpl", "resolve.tmpl"])
+@pytest.mark.parametrize("guard", REQUIRED_GUARDS)
+def test_templates_keep_required_guards(name, guard):
+    """A missing forbidden-pattern hit isn't proof the guard is present --
+    it could mean the guard *and* the field access were both deleted. This
+    positively asserts each required `with` guard is still in the text."""
+    content = (TEMPLATES / name).read_text()
+
+    assert guard in content
 
 
 @pytest.mark.parametrize("name", ["open.tmpl", "update.tmpl", "resolve.tmpl"])
