@@ -1,3 +1,5 @@
+import logging
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -275,3 +277,39 @@ def test_configure_logging_is_idempotent():
     configure_logging()
 
     assert len(logging.getLogger().handlers) == first
+
+
+def test_client_disconnect_during_body_read_returns_503(client, monkeypatch):
+    """A body-read failure (e.g. a mid-upload disconnect) must be a 503, not
+    the bare 500 Starlette's ServerErrorMiddleware would otherwise produce."""
+
+    async def boom(self):
+        raise RuntimeError("client disconnected")
+
+    monkeypatch.setattr("starlette.requests.Request.body", boom)
+
+    response = post(client, envelope_body())
+
+    assert response.status_code == 503
+
+
+def test_bad_bearer_rejection_log_carries_team_key(client, caplog):
+    with caplog.at_level(logging.WARNING, logger="endor_linear_bridge.app"):
+        post(client, envelope_body(), bearer="wrong")
+
+    records = [r for r in caplog.records if "bearer" in r.message.lower()]
+    assert records
+    assert records[0].team_key == "plat"
+
+
+def test_transient_failure_log_carries_notification_uuid(client, caplog):
+    client.deps.client.fail_next_create = LinearTransientError("429")
+
+    with caplog.at_level(logging.WARNING, logger="endor_linear_bridge.app"):
+        post(client, envelope_body())
+
+    records = [r for r in caplog.records if "transient failure" in r.message.lower()]
+    assert records
+    assert records[0].notification_uuid == "notif-1"
+    assert records[0].team_key == "plat"
+    assert records[0].event == "open"

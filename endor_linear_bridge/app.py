@@ -21,7 +21,7 @@ from fastapi import FastAPI, Request, Response
 from endor_linear_bridge import metrics
 from endor_linear_bridge.auth import SIGNATURE_HEADER, verify_bearer, verify_hmac
 from endor_linear_bridge.config import Config, load_config
-from endor_linear_bridge.envelope import EnvelopeError, parse_envelope
+from endor_linear_bridge.envelope import Envelope, EnvelopeError, parse_envelope
 from endor_linear_bridge.handlers import HandlerDeps, TransientFailure, handle_event
 from endor_linear_bridge.linear_cache import StartupError, build_team_runtimes
 from endor_linear_bridge.linear_client import LinearClient
@@ -158,66 +158,117 @@ def create_app(config: Config, deps: HandlerDeps | None = None) -> FastAPI:
 
     @app.post("/hooks/{team_key}")
     async def receive(team_key: str, request: Request, response: Response):
-        # 1. Unknown team -> 404. Checked first: an unknown team has no secret.
+        # 1. Unknown team -> 404. Checked first: an unknown team has no secret,
+        # and this branch needs no request body.
         team = state.config.teams.get(team_key)
         if team is None:
-            logger.warning("webhook for unknown team key %s", team_key)
+            logger.warning(
+                "webhook for unknown team key %s",
+                team_key,
+                extra={"team_key": team_key},
+            )
+            metrics.EVENTS_FAILED.labels(team_key, "unknown", "unknown_team").inc()
             response.status_code = 404
             return {"status": "unknown team"}
 
-        raw_body = await request.body()
-
-        # 2. Bearer token -> 401.
-        if not verify_bearer(
-            request.headers.get("Authorization"), state.config.inbound_bearer_token
-        ):
-            logger.warning("bearer token rejected for team %s", team_key)
-            metrics.EVENTS_FAILED.labels(team_key, "unknown", "bad_bearer").inc()
-            response.status_code = 401
-            return {"status": "unauthorized"}
-
-        # 3. HMAC over the raw bytes, before parsing -> 401.
-        if not verify_hmac(
-            raw_body, request.headers.get(SIGNATURE_HEADER), team.hmac_secret
-        ):
-            logger.warning("HMAC signature rejected for team %s", team_key)
-            metrics.EVENTS_FAILED.labels(team_key, "unknown", "bad_hmac").inc()
-            response.status_code = 401
-            return {"status": "unauthorized"}
-
-        # 4. Envelope validation -> 400.
+        # Everything from here down -- including the body read itself, which
+        # can raise starlette.requests.ClientDisconnect if the client drops
+        # mid-upload -- is covered by the bare `except Exception` below, so a
+        # crash anywhere in this block is 503, never the bare 500 Starlette's
+        # ServerErrorMiddleware would otherwise produce.
+        envelope: Envelope | None = None
         try:
-            envelope = parse_envelope(raw_body)
-        except EnvelopeError as exc:
-            logger.warning("malformed envelope for team %s: %s", team_key, exc)
-            metrics.EVENTS_FAILED.labels(team_key, "unknown", "bad_payload").inc()
-            response.status_code = 400
-            return {"status": "invalid payload"}
+            raw_body = await request.body()
 
-        if state.deps is None:
-            logger.error("received webhook before startup completed")
-            response.status_code = 503
-            return {"status": "not ready"}
+            # 2. Bearer token -> 401.
+            if not verify_bearer(
+                request.headers.get("Authorization"),
+                state.config.inbound_bearer_token,
+            ):
+                logger.warning(
+                    "bearer token rejected for team %s",
+                    team_key,
+                    extra={"team_key": team_key},
+                )
+                metrics.EVENTS_FAILED.labels(team_key, "unknown", "bad_bearer").inc()
+                response.status_code = 401
+                return {"status": "unauthorized"}
 
-        # 5. Process. Anything that goes wrong from here is 503, never 4xx or 500.
-        try:
-            with metrics.LINEAR_API_LATENCY.time():
-                await handle_event(state.deps, team_key, envelope, raw_body)
-        except TransientFailure as exc:
-            logger.warning(
-                "transient failure for %s: %s", envelope.notification.uuid, exc
-            )
-            metrics.EVENTS_FAILED.labels(
-                team_key, envelope.event, "transient"
-            ).inc()
-            response.status_code = 503
-            return {"status": "retry later"}
+            # 3. HMAC over the raw bytes, before parsing -> 401.
+            if not verify_hmac(
+                raw_body, request.headers.get(SIGNATURE_HEADER), team.hmac_secret
+            ):
+                logger.warning(
+                    "HMAC signature rejected for team %s",
+                    team_key,
+                    extra={"team_key": team_key},
+                )
+                metrics.EVENTS_FAILED.labels(team_key, "unknown", "bad_hmac").inc()
+                response.status_code = 401
+                return {"status": "unauthorized"}
+
+            # 4. Envelope validation -> 400.
+            try:
+                envelope = parse_envelope(raw_body)
+            except EnvelopeError as exc:
+                logger.warning(
+                    "malformed envelope for team %s: %s",
+                    team_key,
+                    exc,
+                    extra={"team_key": team_key},
+                )
+                metrics.EVENTS_FAILED.labels(team_key, "unknown", "bad_payload").inc()
+                response.status_code = 400
+                return {"status": "invalid payload"}
+
+            if state.deps is None:
+                logger.error(
+                    "received webhook before startup completed",
+                    extra={"team_key": team_key, "event": envelope.event},
+                )
+                metrics.EVENTS_FAILED.labels(
+                    team_key, envelope.event, "not_ready"
+                ).inc()
+                response.status_code = 503
+                return {"status": "not ready"}
+
+            # 5. Process. TransientFailure gets its own reason and log
+            # message; anything else -- including an error from Linear that
+            # is not a TransientFailure, or one from the body read above --
+            # falls through to the bare except below.
+            try:
+                with metrics.LINEAR_API_LATENCY.time():
+                    await handle_event(state.deps, team_key, envelope, raw_body)
+            except TransientFailure as exc:
+                logger.warning(
+                    "transient failure for %s: %s",
+                    envelope.notification.uuid,
+                    exc,
+                    extra={
+                        "team_key": team_key,
+                        "notification_uuid": envelope.notification.uuid,
+                        "event": envelope.event,
+                    },
+                )
+                metrics.EVENTS_FAILED.labels(
+                    team_key, envelope.event, "transient"
+                ).inc()
+                response.status_code = 503
+                return {"status": "retry later"}
         except Exception:  # noqa: BLE001 -- a 500 would make Endor stop retrying
+            extra = {"team_key": team_key}
+            if envelope is not None:
+                extra["notification_uuid"] = envelope.notification.uuid
+                extra["event"] = envelope.event
             logger.exception(
-                "unexpected error processing %s", envelope.notification.uuid
+                "unexpected error processing webhook for team %s",
+                team_key,
+                extra=extra,
             )
             metrics.EVENTS_FAILED.labels(
-                team_key, envelope.event, "unexpected"
+                team_key,
+                envelope.event if envelope is not None else "unknown",
+                "unexpected",
             ).inc()
             response.status_code = 503
             return {"status": "retry later"}
