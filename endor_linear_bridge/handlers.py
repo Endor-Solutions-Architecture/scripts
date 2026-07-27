@@ -99,6 +99,13 @@ async def handle_update(
             extra=_log_context(team_key, envelope),
         )
         await handle_open(deps, team_key, envelope, raw_body)
+        # handle_open ledgers under "open"; also claim the "update" key so a
+        # redelivery of this same body is a no-op rather than a duplicate
+        # comment. If handle_open raised (TransientFailure), we never reach
+        # here, so the ledger entry is correctly withheld and Endor retries.
+        with deps.session_factory() as session:
+            store.record_event(session, notification.uuid, "update", body_hash)
+            session.commit()
         return
 
     try:

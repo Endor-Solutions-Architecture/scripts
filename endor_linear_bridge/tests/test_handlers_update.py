@@ -2,7 +2,8 @@ import pytest
 
 from endor_linear_bridge import store
 from endor_linear_bridge.envelope import parse_envelope
-from endor_linear_bridge.handlers import handle_event
+from endor_linear_bridge.handlers import TransientFailure, handle_event
+from endor_linear_bridge.linear_client import LinearTransientError
 from endor_linear_bridge.models import STATUS_OPEN
 from endor_linear_bridge.tests.test_handlers_open import (  # noqa: F401
     deps,
@@ -181,3 +182,34 @@ async def test_update_reopens_a_resolved_sub_issue(deps):
     assert any(call["state_id"] == "s-todo" for call in updates)
     with deps.session_factory() as session:
         assert store.get_notification(session, "notif-1").status == STATUS_OPEN
+
+
+async def test_duplicate_delivery_of_a_fallback_create_update_is_a_no_op(deps):
+    """A redelivered UPDATE that fell back to create-instead must dedupe on the
+    second attempt, not the third -- handle_open ledgers under "open", so
+    handle_update must separately claim the "update" key for this same body."""
+    body = envelope_body(event="update", findings=(("f1", "FINDING_LEVEL_HIGH"),))
+
+    await send(deps, body)
+    before = len(deps.client.calls)
+    comments_before = len(deps.client.calls_named("create_comment"))
+
+    await send(deps, body)
+
+    assert len(deps.client.calls) == before
+    assert len(deps.client.calls_named("create_comment")) == comments_before
+
+
+async def test_fallback_create_failure_does_not_record_the_update_ledger(deps):
+    """If handle_open raises, the work didn't happen, so the "update" ledger
+    entry must not be written -- otherwise a genuine retry would be dropped."""
+    body = envelope_body(event="update", findings=(("f1", "FINDING_LEVEL_HIGH"),))
+    deps.client.fail_next_create = LinearTransientError("nope")
+
+    with pytest.raises(TransientFailure):
+        await send(deps, body)
+
+    with deps.session_factory() as session:
+        assert not store.ledger_has(
+            session, "notif-1", "update", store.payload_hash(body)
+        )
