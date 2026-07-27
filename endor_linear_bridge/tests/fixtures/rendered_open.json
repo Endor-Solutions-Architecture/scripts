@@ -22,20 +22,20 @@
   },
   "findings": [
     {
-      "uuid": "f1a2b3c4",
-      "description": "lodash is vulnerable to prototype pollution via zipObjectDeep",
-      "severity": "FINDING_LEVEL_CRITICAL",
-      "dependency": "lodash@4.17.4",
-      "package": "webapp@1.5.0",
-      "finding_url": "https://app.endorlabs.com/t/acme/findings/f1a2b3c4"
-    },
-    {
       "uuid": "d5e6f7a8",
       "description": "lodash command injection in template",
       "severity": "FINDING_LEVEL_HIGH",
       "dependency": "lodash@4.17.4",
       "package": "webapp@1.5.0",
       "finding_url": "https://app.endorlabs.com/t/acme/findings/d5e6f7a8"
+    },
+    {
+      "uuid": "f1a2b3c4",
+      "description": "lodash is vulnerable to prototype pollution via zipObjectDeep",
+      "severity": "FINDING_LEVEL_CRITICAL",
+      "dependency": "lodash@4.17.4",
+      "package": "webapp@1.5.0",
+      "finding_url": "https://app.endorlabs.com/t/acme/findings/f1a2b3c4"
     }
   ]
 }

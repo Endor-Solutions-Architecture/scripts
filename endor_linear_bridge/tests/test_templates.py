@@ -3,6 +3,14 @@
 Go templates cannot be executed here, so these tests assert that
 representative rendered output -- including the degenerate shapes the `with`
 guards produce for nil protobuf fields -- parses into a usable Envelope.
+
+Fixture finding order: Go's `text/template` sorts map keys before ranging
+over them, so the "findings" array in any fixture with more than one finding
+must list them in ascending order of the finding UUID string (that's the
+order `.FindingsMap` actually yields when the template executes). A fixture
+with findings out of UUID order cannot be produced by its own template, which
+would undermine the drift guard these tests exist for. When adding a new
+multi-finding fixture, sort its findings by UUID.
 """
 
 import json
@@ -14,6 +22,25 @@ from endor_linear_bridge.envelope import NO_DEPS_SENTINEL, parse_envelope
 
 FIXTURES = Path(__file__).parent / "fixtures"
 TEMPLATES = Path(__file__).parent.parent / "templates"
+
+# Unguarded access patterns that must never appear literally in a template:
+# each corresponds to an optional protobuf field the brief identifies as not
+# guaranteed to be set. A nil wrapper's `.Value` accessed without a `with`
+# guard is a Go template *execution error* that fails the whole notification.
+# These are the *unguarded* dotted forms -- the guarded shape
+# (`{{ with .PolicyName }}{{ jsonEscape .Value }}{{ end }}`) contains
+# `.Value` but never the field name and `.Value` joined in one path, so this
+# check does not false-positive on correctly guarded fields.
+FORBIDDEN_UNGUARDED = (
+    ".RawNotification.Spec.AggregationDetails.PkgVersionUuid.Value",
+    ".RawNotification.Spec.AggregationDetails.AggregationTargetName.Value",
+    ".RawNotification.Context.Id.Value",
+    ".RawNotification.Spec.PolicyUuid.Value",
+    ".PolicyName.Value",
+    ".PolicyAppUrl.Value",
+    ".ProjectAppUrl.Value",
+    ".RefName.Value",
+)
 
 
 def fixture_bytes(name):
@@ -85,6 +112,17 @@ def test_templates_guard_optional_fields_with_with(name):
         "{{- with .RawNotification.Spec.AggregationDetails }}" in content
     )
     assert ".RawNotification.Spec.AggregationDetails.PkgVersionUuid.Value" not in content
+
+
+@pytest.mark.parametrize("name", ["open.tmpl", "update.tmpl", "resolve.tmpl"])
+@pytest.mark.parametrize("forbidden", FORBIDDEN_UNGUARDED)
+def test_templates_never_access_optional_fields_unguarded(name, forbidden):
+    """Every not-guaranteed-to-be-set field must be behind a `with`, not just
+    AggregationDetails/PkgVersionUuid -- an unguarded .Value on any of these
+    is a template execution error that fails the whole notification."""
+    content = (TEMPLATES / name).read_text()
+
+    assert forbidden not in content
 
 
 @pytest.mark.parametrize("name", ["open.tmpl", "update.tmpl", "resolve.tmpl"])
