@@ -4,9 +4,9 @@ Eight operations against https://api.linear.app/graphql. Linear API keys go in
 the Authorization header raw -- no Bearer prefix. Every mutation nests a
 `success` boolean, and a false value is an error even though HTTP said 200.
 
-Retry policy: 429 and 5xx get jittered exponential backoff in-process, then
-surface as LinearTransientError so the caller can return 503 and let Endor
-retry at 1h/2h/4h. 4xx is a configuration problem and is never retried.
+Retry policy: 429 and every 5xx get jittered exponential backoff in-process,
+then surface as LinearTransientError so the caller can return 503 and let
+Endor retry at 1h/2h/4h. 4xx is a configuration problem and is never retried.
 """
 
 from __future__ import annotations
@@ -20,7 +20,13 @@ import httpx
 RATE_LIMIT_REMAINING_HEADER = "X-RateLimit-Requests-Remaining"
 
 DEFAULT_BACKOFF_SECONDS: tuple[float, ...] = (1.0, 4.0, 15.0)
-RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
+# 429 plus every 5xx is retryable; see _is_retryable().
+RETRYABLE_STATUS = frozenset({429})
+
+
+def _is_retryable(status_code: int) -> bool:
+    """Rate limiting and any server-side failure are worth retrying."""
+    return status_code in RETRYABLE_STATUS or status_code >= 500
 
 
 class LinearError(Exception):
@@ -143,7 +149,7 @@ class LinearClient:
             else:
                 self._record_rate_limit(response)
 
-                if response.status_code in RETRYABLE_STATUS:
+                if _is_retryable(response.status_code):
                     last_detail = f"HTTP {response.status_code}"
                 elif response.status_code >= 400:
                     raise LinearRequestError(

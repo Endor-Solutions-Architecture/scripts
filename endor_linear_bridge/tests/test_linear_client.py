@@ -100,6 +100,29 @@ async def test_execute_retries_on_500_then_succeeds():
     assert route.call_count == 2
 
 
+async def test_execute_retries_on_507_then_succeeds():
+    """501/505/507-511 are outside the old hardcoded RETRYABLE_STATUS set but
+    are still 5xx, so they must retry too."""
+    async with respx.mock() as mock:
+        route = mock.post(API_URL).mock(
+            side_effect=[httpx.Response(507), graphql_ok({"ok": True})]
+        )
+
+        await build_client().execute("query { ok }", {})
+
+    assert route.call_count == 2
+
+
+async def test_execute_does_not_retry_on_4xx():
+    async with respx.mock() as mock:
+        route = mock.post(API_URL).mock(return_value=httpx.Response(400))
+
+        with pytest.raises(LinearRequestError):
+            await build_client().execute("query { ok }", {})
+
+    assert route.call_count == 1
+
+
 async def test_execute_raises_transient_after_exhausting_retries():
     async with respx.mock() as mock:
         route = mock.post(API_URL).mock(return_value=httpx.Response(429))
@@ -130,6 +153,20 @@ async def test_execute_records_rate_limit_remaining():
         await client.execute("query { ok }", {})
 
     assert client.last_rate_limit_remaining == 1387
+
+
+async def test_execute_ignores_malformed_rate_limit_header():
+    async with respx.mock() as mock:
+        mock.post(API_URL).mock(
+            return_value=graphql_ok(
+                {"ok": True}, headers={"X-RateLimit-Requests-Remaining": "abc"}
+            )
+        )
+        client = build_client()
+
+        await client.execute("query { ok }", {})
+
+    assert client.last_rate_limit_remaining is None
 
 
 async def test_teams_returns_nodes():
