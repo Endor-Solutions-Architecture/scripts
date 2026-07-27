@@ -1,0 +1,29 @@
+# Endor Linear Bridge configuration.
+# Secrets are NEVER stored here -- this file names environment variables and
+# the service resolves them at startup. A missing or empty variable is a
+# startup failure.
+
+linear:
+  api_key_env: LINEAR_API_KEY            # sent as "Authorization: <key>" (no Bearer prefix)
+  # api_url: https://api.linear.app/graphql   # override only for testing
+
+server:
+  inbound_bearer_token_env: BRIDGE_BEARER_TOKEN
+  # database_url: sqlite:///./bridge.db       # Postgres: postgresql+psycopg://user:pass@host/db
+  # max_findings_per_issue: 50                # descriptions truncate above this
+
+teams:
+  # Path segment: this team receives POST /hooks/plat
+  plat:
+    linear_team_key: PLAT                # resolved to a Linear team id at startup
+    hmac_secret_env: ENDOR_HMAC_PLAT     # required -- HMAC has no opt-out
+    # open_state: Todo                   # default: first "unstarted"-type state
+    # close_state: Done                  # default: first "completed"-type state
+    # reopen_state: Todo                 # default: same as open_state
+    # labels: [endorlabs]                # ensured to exist; applied to every issue
+    # priority_from_severity: true       # false -> every issue gets priority 0 (none)
+    # severity_labels: true              # false -> no per-severity label
+    # severity_label_prefix: "endor-"    # yields endor-critical, endor-high, ...
+  sec:
+    linear_team_key: SEC
+    hmac_secret_env: ENDOR_HMAC_SEC
