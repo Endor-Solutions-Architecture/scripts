@@ -5,10 +5,12 @@ from endor_linear_bridge.render import (
     NOTIFICATION_FOOTER_PREFIX,
     PARENT_CONTEXT_FOOTER_PREFIX,
     PARENT_PROJECT_FOOTER_PREFIX,
+    PARENT_TEAM_FOOTER_PREFIX,
     notification_footer_query,
     parent_context_footer,
     parent_description,
     parent_footer_query,
+    parent_team_footer,
     parent_title,
     reopen_comment,
     resolution_comment,
@@ -134,6 +136,7 @@ def test_parent_description_includes_both_footers():
     body = parent_description(
         project_uuid="proj-1",
         context_id="main",
+        team_key="plat",
         project_name="webapp",
         project_app_url="https://app.endorlabs.com/t/ns/projects/proj-1",
         policy_name="Critical vulns",
@@ -142,6 +145,35 @@ def test_parent_description_includes_both_footers():
 
     assert f"{PARENT_PROJECT_FOOTER_PREFIX} proj-1" in body
     assert f"{PARENT_CONTEXT_FOOTER_PREFIX} main" in body
+
+
+def test_parent_description_includes_the_team_footer():
+    body = parent_description(
+        project_uuid="proj-1",
+        context_id="main",
+        team_key="plat",
+        project_name="webapp",
+        project_app_url="https://app.endorlabs.com/t/ns/projects/proj-1",
+        policy_name="Critical vulns",
+        policy_app_url="https://app.endorlabs.com/t/ns/policies/pol-1",
+    )
+
+    assert f"{PARENT_TEAM_FOOTER_PREFIX} plat" in body
+
+
+def test_parent_team_footer_distinguishes_teams():
+    body = parent_description(
+        project_uuid="proj-1",
+        context_id="main",
+        team_key="plat",
+        project_name="webapp",
+        project_app_url="",
+        policy_name="",
+        policy_app_url="",
+    )
+
+    assert parent_team_footer("plat") in body
+    assert parent_team_footer("sec") not in body
 
 
 def test_update_comment_reports_the_count_and_lists_findings():
@@ -181,6 +213,7 @@ def test_parent_context_footer_is_matchable_in_a_description():
     body = parent_description(
         project_uuid="proj-1",
         context_id="main",
+        team_key="plat",
         project_name="webapp",
         project_app_url="",
         policy_name="",

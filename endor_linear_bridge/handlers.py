@@ -127,7 +127,7 @@ async def ensure_parent(
 
     if parent.status == STATUS_PENDING:
         if parent.linear_issue_id is None:
-            adopted = await _find_parent_issue(deps, envelope)
+            adopted = await _find_parent_issue(deps, runtime, envelope)
             if adopted is not None:
                 store.attach_linear_issue(
                     session, parent, adopted["id"], adopted["identifier"]
@@ -143,6 +143,7 @@ async def ensure_parent(
                 description=render.parent_description(
                     project_uuid=notification.project_uuid,
                     context_id=notification.context_id,
+                    team_key=runtime.config.key,
                     project_name=notification.project_name,
                     project_app_url=notification.project_app_url,
                     policy_name=notification.policy_name,
@@ -173,15 +174,23 @@ async def ensure_parent(
 
 
 async def _find_parent_issue(
-    deps: HandlerDeps, envelope: Envelope
+    deps: HandlerDeps, runtime: TeamRuntime, envelope: Envelope
 ) -> dict[str, Any] | None:
-    """Search Linear for a parent issue left behind by a crashed run."""
+    """Search Linear for a parent issue left behind by a crashed run.
+
+    The search term alone is too broad to adopt on: it is confirmed against
+    all three footers -- project, context, and team -- since a project can
+    have a separate parent issue per Linear team and Linear's real search may
+    be fuzzier than an exact substring match.
+    """
     notification = envelope.notification
     query = render.parent_footer_query(notification.project_uuid)
     context_footer = render.parent_context_footer(notification.context_id)
+    team_footer = render.parent_team_footer(runtime.config.key)
 
     for candidate in await deps.client.search_issues(query):
-        if context_footer in (candidate.get("description") or ""):
+        description = candidate.get("description") or ""
+        if query in description and context_footer in description and team_footer in description:
             return candidate
     return None
 

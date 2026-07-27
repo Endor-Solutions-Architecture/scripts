@@ -10,6 +10,7 @@ from endor_linear_bridge.models import STATUS_OPEN, STATUS_PENDING, STATUS_RESOL
 from endor_linear_bridge.render import (
     NOTIFICATION_FOOTER_PREFIX,
     PARENT_PROJECT_FOOTER_PREFIX,
+    PARENT_TEAM_FOOTER_PREFIX,
 )
 from endor_linear_bridge.tests.linear_fake import FakeLinearClient
 
@@ -363,7 +364,8 @@ async def test_pending_parent_is_adopted_from_search(deps):
         session.commit()
     deps.client.seed_issue(
         description=(
-            f"{PARENT_PROJECT_FOOTER_PREFIX} proj-1\nEndor-context-id: main"
+            f"{PARENT_PROJECT_FOOTER_PREFIX} proj-1\nEndor-context-id: main\n"
+            f"{PARENT_TEAM_FOOTER_PREFIX} plat"
         ),
         identifier="PLAT-7",
     )
@@ -387,7 +389,8 @@ async def test_pending_parent_ignores_a_different_context(deps):
         session.commit()
     deps.client.seed_issue(
         description=(
-            f"{PARENT_PROJECT_FOOTER_PREFIX} proj-1\nEndor-context-id: release-2"
+            f"{PARENT_PROJECT_FOOTER_PREFIX} proj-1\nEndor-context-id: release-2\n"
+            f"{PARENT_TEAM_FOOTER_PREFIX} plat"
         ),
         identifier="PLAT-7",
     )
@@ -399,6 +402,74 @@ async def test_pending_parent_ignores_a_different_context(deps):
         if call["parent_id"] is None
     ]
     assert len(parents) == 1
+
+
+async def test_pending_parent_ignores_a_different_team(deps):
+    """A project+context can have a separate parent per Linear team; the
+    project-uuid and context footers alone are not enough to adopt across
+    teams, since neither carries team identity."""
+    with deps.session_factory() as session:
+        store.get_or_create_pending_parent(
+            session, project_uuid="proj-1", context_id="main", team_key="plat"
+        )
+        session.commit()
+    deps.client.seed_issue(
+        description=(
+            f"{PARENT_PROJECT_FOOTER_PREFIX} proj-1\nEndor-context-id: main\n"
+            f"{PARENT_TEAM_FOOTER_PREFIX} sec"
+        ),
+        identifier="SEC-7",
+    )
+
+    await send(deps, envelope_body())
+
+    parents = [
+        call for call in deps.client.calls_named("create_issue")
+        if call["parent_id"] is None
+    ]
+    assert len(parents) == 1
+    with deps.session_factory() as session:
+        parent, _ = store.get_or_create_pending_parent(
+            session, project_uuid="proj-1", context_id="main", team_key="plat"
+        )
+        assert parent.linear_identifier != "SEC-7"
+
+
+async def test_find_parent_issue_rejects_a_candidate_missing_the_project_footer():
+    """The search term itself must be re-verified, not assumed from the query.
+
+    FakeLinearClient.search_issues already filters by the query substring, so
+    this exercises _find_parent_issue directly against a client double that
+    returns a candidate regardless of content -- standing in for Linear's real
+    full-text search, which may be fuzzier than an exact substring match.
+    """
+    from endor_linear_bridge.handlers import _find_parent_issue
+
+    class LooseSearchClient(FakeLinearClient):
+        async def search_issues(self, query, first=10):
+            self.calls.append(("search_issues", {"query": query}))
+            return [
+                {
+                    "id": "bad-1",
+                    "identifier": "PLAT-9",
+                    # Has the context and team footers, but not the project one.
+                    "description": (
+                        f"Endor-context-id: main\n{PARENT_TEAM_FOOTER_PREFIX} plat"
+                    ),
+                }
+            ]
+
+    deps = HandlerDeps(
+        session_factory=None,
+        client=LooseSearchClient(),
+        runtimes={"plat": RUNTIME},
+        config=CONFIG,
+    )
+    envelope = parse_envelope(envelope_body())
+
+    result = await _find_parent_issue(deps, RUNTIME, envelope)
+
+    assert result is None
 
 
 async def test_linear_request_error_becomes_transient_failure(deps):

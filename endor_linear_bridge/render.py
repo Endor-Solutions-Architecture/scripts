@@ -17,6 +17,7 @@ from endor_linear_bridge.severity import label_word, sort_key
 NOTIFICATION_FOOTER_PREFIX = "Endor-notification-uuid:"
 PARENT_PROJECT_FOOTER_PREFIX = "Endor-project-uuid:"
 PARENT_CONTEXT_FOOTER_PREFIX = "Endor-context-id:"
+PARENT_TEAM_FOOTER_PREFIX = "Endor-team-key:"
 
 NO_DEPS_TITLE = "Findings with no dependencies"
 
@@ -120,6 +121,7 @@ def parent_description(
     *,
     project_uuid: str,
     context_id: str,
+    team_key: str,
     project_name: str,
     project_app_url: str,
     policy_name: str,
@@ -141,6 +143,7 @@ def parent_description(
         "---",
         f"{PARENT_PROJECT_FOOTER_PREFIX} {project_uuid}",
         f"{PARENT_CONTEXT_FOOTER_PREFIX} {context_id}",
+        parent_team_footer(team_key),
     ]
     return "\n".join(lines)
 
@@ -185,3 +188,13 @@ def parent_footer_query(project_uuid: str) -> str:
 def parent_context_footer(context_id: str) -> str:
     """Exact footer line a candidate parent's description must contain."""
     return f"{PARENT_CONTEXT_FOOTER_PREFIX} {context_id}"
+
+
+def parent_team_footer(team_key: str) -> str:
+    """Exact footer line a candidate parent's description must contain.
+
+    Neither the project-uuid nor context footers carry team identity, but a
+    project can have a separate parent issue per Linear team -- without this,
+    crash-recovery search could adopt another team's parent.
+    """
+    return f"{PARENT_TEAM_FOOTER_PREFIX} {team_key}"
