@@ -102,6 +102,14 @@ docker compose up --build
 Set `database_url: sqlite:////data/bridge.db` (four slashes) so the database
 lands on the mounted volume.
 
+The container runs as a non-root user (the environment holds the Linear API
+key and every team's HMAC secret). The Dockerfile `chown`s `/data` to that
+user at build time, which Docker applies when it initializes a fresh named
+volume (as `docker-compose.yml`'s `bridge-data` volume is) from the image's
+directory contents — a bind-mounted host directory is not affected and should
+already be writable by uid `10001`, or by anyone if that is acceptable in your
+environment.
+
 > **The database is the only mapping from Endor notification UUID to Linear
 > issue.** Losing it orphans open tickets and the next scan creates duplicates.
 > Back it up, and never run on an ephemeral filesystem without pointing
@@ -120,7 +128,7 @@ For each Linear team — example team key `PLAT`:
 | URL | `https://<bridge-host>/hooks/plat` — **must be https**, Endor rejects plain http |
 | Auth method | **API Key**, value = `BRIDGE_BEARER_TOKEN` |
 | HMAC | **Enabled**, secret = `ENDOR_HMAC_PLAT`. Required — the bridge has no opt-out |
-| Custom template | The three documents in `templates/` |
+| Custom template | **Three separate fields, one per lifecycle operation** — `templates/open.tmpl` → the target's *Open action* template, `templates/update.tmpl` → its *Update action* template, `templates/resolve.tmpl` → its *Resolve action* template. **⚠ Unconfirmed against the live tenant UI — verify the exact field names on first setup** (see "Known limitations" below). **Failure mode if this is wrong:** pasting the same template (e.g. `open.tmpl`) into all three fields yields a bridge that creates issues and never closes them — a silent failure that looks fine until the first dependency is actually fixed. |
 
 **2. Action policy**
 
@@ -138,6 +146,19 @@ For each Linear team — example team key `PLAT`:
 | `GET /healthz` | Liveness |
 | `GET /readyz` | Readiness — database reachable and Linear caches loaded |
 | `GET /metrics` | Prometheus exposition |
+
+`/metrics` is **unauthenticated** and exposes every configured team key as a
+label value — restrict it at the ingress (internal network / scrape-only
+allowlist) rather than exposing it alongside `/hooks/{team_key}`.
+
+`events_received_total{team,event}` counts arrivals (incremented once the
+delivery is authenticated and its envelope parses, before Linear is called),
+and `events_failed_total{team,event,reason}` counts a subset of those that
+then failed — so `failed / received` is a meaningful failure rate. The
+`team` label on `events_failed_total`'s `unknown_team` reason is always the
+literal string `unknown`, never the requested path segment, since that
+segment is unauthenticated and would otherwise let anyone grow the metric's
+cardinality without bound.
 
 ### Response codes, and why they matter
 
@@ -210,6 +231,16 @@ on (notification uuid, event, payload hash). Edit a field to make it a new event
 
 ## Known limitations
 
+0. **Highest priority to confirm during first live setup: the custom template
+   → action field mapping.** The Endor setup table above documents
+   `open.tmpl` / `update.tmpl` / `resolve.tmpl` going into three separate
+   per-operation template fields (Open / Update / Resolve action templates),
+   but this has not been verified against a live tenant's UI — the exact
+   field names are inferred, not confirmed. Get this wrong (e.g. the same
+   template pasted into all three) and the bridge creates issues but never
+   closes them, silently, until someone notices a "resolved" dependency still
+   has an open ticket. Confirm this first, before anything else, on the first
+   live setup.
 1. **Partial resolution does not fire a webhook.** Endor only sends UPDATE when
    *new* findings appear, so a sub-issue whose findings partly resolve goes stale
    until the next new finding or a full resolve. This affects every Endor webhook

@@ -17,6 +17,8 @@ from typing import Any, Awaitable, Callable, Iterable, Sequence
 
 import httpx
 
+from endor_linear_bridge import metrics
+
 RATE_LIMIT_REMAINING_HEADER = "X-RateLimit-Requests-Remaining"
 
 DEFAULT_BACKOFF_SECONDS: tuple[float, ...] = (1.0, 4.0, 15.0)
@@ -131,7 +133,18 @@ class LinearClient:
             self.last_rate_limit_remaining = None
 
     async def execute(self, document: str, variables: dict[str, Any]) -> dict[str, Any]:
-        """POST a GraphQL document, retrying transient failures, and return `data`."""
+        """POST a GraphQL document, retrying transient failures, and return `data`.
+
+        Timed end-to-end (including in-process retry backoff) with
+        LINEAR_API_LATENCY so the metric reflects one Linear GraphQL request,
+        not the surrounding handler's database work or rendering.
+        """
+        with metrics.LINEAR_API_LATENCY.time():
+            return await self._execute(document, variables)
+
+    async def _execute(
+        self, document: str, variables: dict[str, Any]
+    ) -> dict[str, Any]:
         payload = {"query": document, "variables": variables}
         headers = {
             "Authorization": self._api_key,

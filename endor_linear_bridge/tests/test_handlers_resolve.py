@@ -4,7 +4,8 @@ import pytest
 
 from endor_linear_bridge import store
 from endor_linear_bridge.envelope import parse_envelope
-from endor_linear_bridge.handlers import handle_event
+from endor_linear_bridge.handlers import TransientFailure, handle_event
+from endor_linear_bridge.linear_client import LinearTransientError
 from endor_linear_bridge.models import STATUS_OPEN, STATUS_RESOLVED
 from endor_linear_bridge.tests.test_handlers_open import (  # noqa: F401
     deps,
@@ -162,6 +163,22 @@ async def test_resolve_keeps_the_finding_rows(deps):
 
     with deps.session_factory() as session:
         assert store.all_findings(session, "notif-1")
+
+
+async def test_linear_failure_during_resolve_is_transient_and_unledgered(deps):
+    """Fix 5: RESOLVE acts on an issue id that may be months old and could
+    just as easily hit a real Linear failure as OPEN's create_issue does."""
+    await send(deps, envelope_body(event="open"))
+    body = resolve_body()
+    deps.client.fail_next["update_issue"] = LinearTransientError("linear degraded")
+
+    with pytest.raises(TransientFailure):
+        await send(deps, body)
+
+    with deps.session_factory() as session:
+        assert not store.ledger_has(
+            session, "notif-1", "resolve", store.payload_hash(body)
+        )
 
 
 async def test_regression_after_resolve_creates_a_new_sub_issue(deps):

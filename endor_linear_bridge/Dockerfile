@@ -15,6 +15,16 @@ ENV BRIDGE_CONFIG=/app/config.yaml
 # after any restart.
 VOLUME ["/data"]
 
+# Run as a non-root user: the container's environment holds the Linear API key
+# and every team's HMAC secret. /data is chowned so the SQLite file (and its
+# WAL/SHM siblings) remain writable by that user once the volume is mounted --
+# a bind mount inherits the host directory's ownership, so this matters most
+# for a named volume, which Docker initializes from the image's copy.
+RUN useradd --create-home --uid 10001 bridge \
+    && mkdir -p /data \
+    && chown -R bridge:bridge /data /app
+USER bridge
+
 EXPOSE 8080
 
 # TLS is terminated by the ingress in front of this container.

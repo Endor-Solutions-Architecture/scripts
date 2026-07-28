@@ -10,6 +10,7 @@ from endor_linear_bridge.render import (
     parent_context_footer,
     parent_description,
     parent_footer_query,
+    parent_resolution_comment,
     parent_team_footer,
     parent_title,
     reopen_comment,
@@ -195,6 +196,19 @@ def test_resolution_comment_includes_the_timestamp():
 
     assert "2026-07-26" in body
     assert "resolved" in body.lower()
+
+
+def test_parent_resolution_comment_does_not_say_dependency():
+    """Distinct from resolution_comment(): that wording is wrong on the parent,
+    which closes because every sub-issue underneath it resolved, not because
+    the parent itself is a dependency."""
+    ts = datetime(2026, 7, 26, 12, 30, tzinfo=timezone.utc)
+
+    body = parent_resolution_comment(ts)
+
+    assert "2026-07-26" in body
+    assert "resolved" in body.lower()
+    assert "dependency" not in body.lower()
 
 
 def test_reopen_comment_mentions_new_findings():

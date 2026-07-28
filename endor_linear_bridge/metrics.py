@@ -1,10 +1,14 @@
-"""Prometheus metrics for the bridge."""
+"""Prometheus metrics for the bridge.
+
+Kept free of framework imports (prometheus_client only). linear_client.py
+imports this module directly to time GraphQL requests, and that module has no
+business depending on FastAPI -- so the `/metrics` response helper, which does
+need FastAPI's Response, lives in app.py instead of here.
+"""
 
 from __future__ import annotations
 
-from fastapi import Response
-from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram
-from prometheus_client import generate_latest
+from prometheus_client import Counter, Gauge, Histogram
 
 EVENTS_RECEIVED = Counter(
     "events_received_total",
@@ -27,7 +31,3 @@ LINEAR_RATE_LIMIT_REMAINING = Gauge(
     "linear_rate_limit_remaining",
     "Requests remaining in the current Linear rate-limit window",
 )
-
-
-def metrics_response() -> Response:
-    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)

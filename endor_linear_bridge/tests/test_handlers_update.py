@@ -4,7 +4,7 @@ from endor_linear_bridge import store
 from endor_linear_bridge.envelope import parse_envelope
 from endor_linear_bridge.handlers import TransientFailure, handle_event
 from endor_linear_bridge.linear_client import LinearTransientError
-from endor_linear_bridge.models import STATUS_OPEN
+from endor_linear_bridge.models import STATUS_OPEN, STATUS_RESOLVED, ProjectParent
 from endor_linear_bridge.tests.test_handlers_open import (  # noqa: F401
     deps,
     envelope_body,
@@ -204,7 +204,61 @@ async def test_fallback_create_failure_does_not_record_the_update_ledger(deps):
     """If handle_open raises, the work didn't happen, so the "update" ledger
     entry must not be written -- otherwise a genuine retry would be dropped."""
     body = envelope_body(event="update", findings=(("f1", "FINDING_LEVEL_HIGH"),))
-    deps.client.fail_next_create = LinearTransientError("nope")
+    deps.client.fail_next["create_issue"] = LinearTransientError("nope")
+
+    with pytest.raises(TransientFailure):
+        await send(deps, body)
+
+    with deps.session_factory() as session:
+        assert not store.ledger_has(
+            session, "notif-1", "update", store.payload_hash(body)
+        )
+
+
+async def test_update_after_resolve_reopens_the_parent(deps):
+    """Fix 1 regression: a retried UPDATE that arrives after a RESOLVE closed
+    both the sub-issue and its (last-child) parent must reopen the parent too,
+    not just the sub-issue. The invariant is that a parent is open iff it has
+    at least one unresolved child; before this fix _apply_current_state()
+    reopened only the sub-issue, so the parent stayed closed forever."""
+    await open_first(deps)
+
+    # Resolve closes the sub-issue and, being the only child, the parent too.
+    await send(deps, envelope_body(event="resolve"))
+
+    with deps.session_factory() as session:
+        row = store.get_notification(session, "notif-1")
+        assert row.status == STATUS_RESOLVED
+        parent = session.get(ProjectParent, row.parent_id)
+        assert parent.status == STATUS_RESOLVED
+        parent_issue_id = parent.linear_issue_id
+
+    # A retried UPDATE for the same notification, delivered after the
+    # dependency was independently fixed and resolved.
+    await send(
+        deps, envelope_body(event="update", findings=(("f2", "FINDING_LEVEL_HIGH"),))
+    )
+
+    with deps.session_factory() as session:
+        row = store.get_notification(session, "notif-1")
+        parent = session.get(ProjectParent, row.parent_id)
+        assert row.status == STATUS_OPEN
+        assert parent.status == STATUS_OPEN
+
+    parent_reopens = [
+        call
+        for call in deps.client.calls_named("update_issue")
+        if call["issue_id"] == parent_issue_id and call["state_id"] == "s-todo"
+    ]
+    assert parent_reopens
+
+
+async def test_linear_failure_during_update_is_transient_and_unledgered(deps):
+    """Fix 5: UPDATE acts on an issue id that may be months old and could just
+    as easily hit a real Linear failure as OPEN's create_issue does."""
+    await open_first(deps)
+    body = envelope_body(event="update", findings=(("f2", "FINDING_LEVEL_HIGH"),))
+    deps.client.fail_next["update_issue"] = LinearTransientError("linear degraded")
 
     with pytest.raises(TransientFailure):
         await send(deps, body)

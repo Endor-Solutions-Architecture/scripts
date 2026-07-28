@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from typing import Any, Iterable
 
+from endor_linear_bridge.linear_client import LinearRequestError
+
 
 class FakeLinearClient:
     def __init__(self):
@@ -15,8 +17,13 @@ class FakeLinearClient:
         self.issues: dict[str, dict] = {}
         self.comments: dict[str, list[str]] = {}
         self._next_id = 0
-        # Set to an exception instance to make the next mutation raise.
-        self.fail_next_create: Exception | None = None
+        # operation name ("create_issue", "update_issue", "create_comment",
+        # "search_issues") -> exception to raise on that operation's next call,
+        # consumed on first use. Lets tests inject a Linear failure on any
+        # operation, not just create_issue -- UPDATE and RESOLVE act on an
+        # issue id that may be months old and could hit a real 4xx/429/5xx
+        # just as easily as OPEN's create_issue does.
+        self.fail_next: dict[str, Exception] = {}
 
     def _new_id(self, prefix="i"):
         self._next_id += 1
@@ -27,6 +34,11 @@ class FakeLinearClient:
 
     def calls_named(self, name: str) -> list[dict]:
         return [payload for called, payload in self.calls if called == name]
+
+    def _maybe_fail(self, operation: str) -> None:
+        error = self.fail_next.pop(operation, None)
+        if error is not None:
+            raise error
 
     async def create_issue(
         self,
@@ -49,11 +61,7 @@ class FakeLinearClient:
             label_ids=tuple(label_ids),
         )
         self.calls.append(("create_issue", payload))
-
-        if self.fail_next_create is not None:
-            error = self.fail_next_create
-            self.fail_next_create = None
-            raise error
+        self._maybe_fail("create_issue")
 
         issue_id = self._new_id()
         identifier = f"PLAT-{self._next_id}"
@@ -88,10 +96,17 @@ class FakeLinearClient:
             label_ids=None if label_ids is None else tuple(label_ids),
         )
         self.calls.append(("update_issue", payload))
+        self._maybe_fail("update_issue")
 
-        issue = self.issues.setdefault(
-            issue_id, {"id": issue_id, "identifier": "PLAT-?"}
-        )
+        issue = self.issues.get(issue_id)
+        if issue is None:
+            # Real Linear would 400 here: the id is stale or was never valid.
+            # Auto-vivifying it (the old behavior) would silently paper over a
+            # bug that acts on the wrong id -- update_issue is only ever
+            # called with an id this fake (or the DB) already believes exists.
+            raise LinearRequestError(
+                f"issueUpdate on unknown issue id {issue_id!r}"
+            )
         for key, value in (
             ("title", title),
             ("description", description),
@@ -106,10 +121,12 @@ class FakeLinearClient:
 
     async def create_comment(self, issue_id: str, body: str) -> None:
         self.calls.append(("create_comment", {"issue_id": issue_id, "body": body}))
+        self._maybe_fail("create_comment")
         self.comments.setdefault(issue_id, []).append(body)
 
     async def search_issues(self, query: str, first: int = 10) -> list[dict[str, Any]]:
         self.calls.append(("search_issues", {"query": query}))
+        self._maybe_fail("search_issues")
         return [
             {
                 "id": issue["id"],

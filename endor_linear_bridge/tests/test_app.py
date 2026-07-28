@@ -1,13 +1,15 @@
 import logging
 
+import httpx
 import pytest
+import respx
 from fastapi.testclient import TestClient
 
-from endor_linear_bridge import store
+from endor_linear_bridge import metrics, store
 from endor_linear_bridge.app import create_app
 from endor_linear_bridge.auth import compute_signature
 from endor_linear_bridge.handlers import HandlerDeps
-from endor_linear_bridge.linear_client import LinearTransientError
+from endor_linear_bridge.linear_client import LinearClient, LinearTransientError
 from endor_linear_bridge.tests.linear_fake import FakeLinearClient
 from endor_linear_bridge.tests.test_handlers_open import (
     CONFIG,
@@ -17,6 +19,7 @@ from endor_linear_bridge.tests.test_handlers_open import (
 
 HMAC_SECRET = "secret"
 BEARER = "token"
+LINEAR_API_URL = "https://api.linear.app/graphql"
 
 
 @pytest.fixture
@@ -34,6 +37,65 @@ def client(app_deps):
     with TestClient(create_app(CONFIG, deps=app_deps)) as test_client:
         test_client.deps = app_deps
         yield test_client
+
+
+@pytest.fixture
+def real_client_app(session_factory):
+    """An app wired to a real LinearClient rather than FakeLinearClient.
+
+    LINEAR_API_LATENCY is timed inside LinearClient.execute() (Fix 3a), so
+    exercising it end to end needs the real client -- FakeLinearClient never
+    calls execute() at all, and asserting against it would pass vacuously
+    regardless of whether the metric is wired up correctly.
+    """
+    real_client = LinearClient(api_key="lin_key", api_url=LINEAR_API_URL)
+    deps = HandlerDeps(
+        session_factory=session_factory,
+        client=real_client,
+        runtimes={"plat": RUNTIME},
+        config=CONFIG,
+    )
+    with TestClient(create_app(CONFIG, deps=deps)) as test_client:
+        test_client.deps = deps
+        yield test_client
+
+
+def _linear_success_side_effect(request):
+    """A minimal, generic 'everything succeeds' Linear GraphQL responder.
+
+    Handling a real OPEN touches searchIssues (parent adoption check),
+    issueCreate (parent, then sub-issue), so a fixed single response is not
+    enough -- this dispatches on the operation name in the query text.
+    """
+    import json as _json
+
+    body = _json.loads(request.content)
+    query = body["query"]
+    if "searchIssues" in query:
+        data = {"searchIssues": {"nodes": []}}
+    elif "issueCreate" in query:
+        data = {
+            "issueCreate": {
+                "success": True,
+                "issue": {"id": "i-mock", "identifier": "PLAT-1"},
+            }
+        }
+    elif "issueUpdate" in query:
+        data = {
+            "issueUpdate": {
+                "success": True,
+                "issue": {"id": "i-mock", "identifier": "PLAT-1"},
+            }
+        }
+    elif "commentCreate" in query:
+        data = {"commentCreate": {"success": True}}
+    else:  # pragma: no cover -- defensive; fail loudly on an unhandled op
+        raise AssertionError(f"unexpected GraphQL query in test double: {query}")
+    return httpx.Response(200, json={"data": data})
+
+
+def _mock_linear_success(mock):
+    return mock.post(LINEAR_API_URL).mock(side_effect=_linear_success_side_effect)
 
 
 def post(client, body, *, team="plat", secret=HMAC_SECRET, bearer=BEARER, sign=True):
@@ -62,6 +124,83 @@ def test_metrics_endpoint_exposes_prometheus_text(client):
 
     assert response.status_code == 200
     assert "events_received_total" in response.text
+
+
+def _histogram_sample_count(histogram) -> float:
+    for family in histogram.collect():
+        for sample in family.samples:
+            if sample.name.endswith("_count"):
+                return sample.value
+    return 0.0
+
+
+def _counter_value(counter, *label_values) -> float:
+    return counter.labels(*label_values)._value.get()
+
+
+def test_unknown_team_metric_label_is_bounded(client):
+    """Fix 2: the unknown-team branch runs before authentication, so the path
+    segment is attacker-controlled. It must never become a Prometheus label
+    value -- prometheus_client keeps one child metric per label tuple forever,
+    so an unauthenticated caller could otherwise grow process memory and the
+    /metrics payload without bound."""
+    for bogus in ("aaaa-team", "bbbb-team", "cccc-team"):
+        post(client, envelope_body(), team=bogus)
+
+    text = client.get("/metrics").text
+
+    assert 'team="unknown"' in text
+    assert "aaaa-team" not in text
+    assert "bbbb-team" not in text
+    assert "cccc-team" not in text
+
+
+def test_linear_api_latency_observes_a_sample_for_a_linear_call(real_client_app):
+    """Fix 3a: the histogram times LinearClient.execute(), so a request that
+    reaches Linear must record a sample. Needs the real LinearClient --
+    FakeLinearClient never calls execute()."""
+    with respx.mock() as mock:
+        _mock_linear_success(mock)
+        before = _histogram_sample_count(metrics.LINEAR_API_LATENCY)
+
+        response = post(real_client_app, envelope_body())
+
+        after = _histogram_sample_count(metrics.LINEAR_API_LATENCY)
+
+    assert response.status_code == 200
+    assert after > before
+
+
+def test_linear_api_latency_is_not_observed_for_a_request_rejected_at_auth(
+    real_client_app,
+):
+    """Fix 3a: a request rejected before handle_event runs makes no Linear
+    call, so it must not move the metric -- it used to, back when the timer
+    wrapped the whole handler in app.py."""
+    with respx.mock(assert_all_called=False) as mock:
+        mock.post(LINEAR_API_URL)  # not expected to be called
+        before = _histogram_sample_count(metrics.LINEAR_API_LATENCY)
+
+        response = post(real_client_app, envelope_body(), bearer="wrong")
+
+        after = _histogram_sample_count(metrics.LINEAR_API_LATENCY)
+
+    assert response.status_code == 401
+    assert after == before
+
+
+def test_events_received_increments_for_a_request_that_later_fails(client):
+    """Fix 3b: events_received_total must count arrivals, not successes, so a
+    team whose every delivery fails to reach Linear does not report
+    received=0 forever."""
+    client.deps.client.fail_next["create_issue"] = LinearTransientError("429")
+    before = _counter_value(metrics.EVENTS_RECEIVED, "plat", "open")
+
+    response = post(client, envelope_body())
+
+    after = _counter_value(metrics.EVENTS_RECEIVED, "plat", "open")
+    assert response.status_code == 503
+    assert after == before + 1
 
 
 def test_valid_open_returns_200(client):
@@ -147,7 +286,7 @@ def test_unknown_event_returns_400(client):
 
 
 def test_transient_linear_failure_returns_503(client):
-    client.deps.client.fail_next_create = LinearTransientError("429")
+    client.deps.client.fail_next["create_issue"] = LinearTransientError("429")
 
     response = post(client, envelope_body())
 
@@ -303,7 +442,7 @@ def test_bad_bearer_rejection_log_carries_team_key(client, caplog):
 
 
 def test_transient_failure_log_carries_notification_uuid(client, caplog):
-    client.deps.client.fail_next_create = LinearTransientError("429")
+    client.deps.client.fail_next["create_issue"] = LinearTransientError("429")
 
     with caplog.at_level(logging.WARNING, logger="endor_linear_bridge.app"):
         post(client, envelope_body())

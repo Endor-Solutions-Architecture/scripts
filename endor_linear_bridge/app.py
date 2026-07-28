@@ -17,6 +17,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
 from fastapi import FastAPI, Request, Response
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from endor_linear_bridge import metrics
 from endor_linear_bridge.auth import SIGNATURE_HEADER, verify_bearer, verify_hmac
@@ -87,6 +88,16 @@ class AppState:
     ready: bool = False
 
 
+def metrics_response() -> Response:
+    """Render the Prometheus exposition body.
+
+    Lives here rather than in metrics.py so that module can stay free of a
+    FastAPI dependency -- linear_client.py imports metrics.py directly to time
+    GraphQL requests, and has no business dragging the web framework in.
+    """
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+
 def readiness_status(state: AppState) -> int:
     """200 once the database and Linear caches are usable, else 503."""
     if not state.ready or state.deps is None:
@@ -154,7 +165,7 @@ def create_app(config: Config, deps: HandlerDeps | None = None) -> FastAPI:
             )
             if remaining is not None:
                 metrics.LINEAR_RATE_LIMIT_REMAINING.set(remaining)
-        return metrics.metrics_response()
+        return metrics_response()
 
     @app.post("/hooks/{team_key}")
     async def receive(team_key: str, request: Request, response: Response):
@@ -162,12 +173,19 @@ def create_app(config: Config, deps: HandlerDeps | None = None) -> FastAPI:
         # and this branch needs no request body.
         team = state.config.teams.get(team_key)
         if team is None:
+            # The path segment is unauthenticated and attacker-controlled at
+            # this point (no team means no secret to verify against), so it
+            # must never become a Prometheus label value -- prometheus_client
+            # retains one child metric per label tuple forever, and anyone who
+            # can reach this public endpoint could grow it without bound by
+            # POSTing to a stream of random paths. The real value still goes
+            # in the log line, which is bounded by rotation.
             logger.warning(
                 "webhook for unknown team key %s",
                 team_key,
                 extra={"team_key": team_key},
             )
-            metrics.EVENTS_FAILED.labels(team_key, "unknown", "unknown_team").inc()
+            metrics.EVENTS_FAILED.labels("unknown", "unknown", "unknown_team").inc()
             response.status_code = 404
             return {"status": "unknown team"}
 
@@ -221,6 +239,14 @@ def create_app(config: Config, deps: HandlerDeps | None = None) -> FastAPI:
                 response.status_code = 400
                 return {"status": "invalid payload"}
 
+            # This is the earliest point at which both metric labels (team,
+            # event) are known for a well-formed, authenticated delivery, so
+            # it is where "received" is counted -- including the failures
+            # below, so events_failed_total is a true subset and
+            # failed/received is a meaningful rate. Counted exactly once: nothing
+            # below re-increments it.
+            metrics.EVENTS_RECEIVED.labels(team_key, envelope.event).inc()
+
             if state.deps is None:
                 logger.error(
                     "received webhook before startup completed",
@@ -237,8 +263,7 @@ def create_app(config: Config, deps: HandlerDeps | None = None) -> FastAPI:
             # is not a TransientFailure, or one from the body read above --
             # falls through to the bare except below.
             try:
-                with metrics.LINEAR_API_LATENCY.time():
-                    await handle_event(state.deps, team_key, envelope, raw_body)
+                await handle_event(state.deps, team_key, envelope, raw_body)
             except TransientFailure as exc:
                 logger.warning(
                     "transient failure for %s: %s",
@@ -273,7 +298,6 @@ def create_app(config: Config, deps: HandlerDeps | None = None) -> FastAPI:
             response.status_code = 503
             return {"status": "retry later"}
 
-        metrics.EVENTS_RECEIVED.labels(team_key, envelope.event).inc()
         return {"status": "ok"}
 
     return app

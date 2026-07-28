@@ -286,7 +286,7 @@ async def test_open_replaces_findings_rather_than_merging(deps):
 
 
 async def test_transient_linear_failure_leaves_a_pending_row(deps):
-    deps.client.fail_next_create = LinearTransientError("429 forever")
+    deps.client.fail_next["create_issue"] = LinearTransientError("429 forever")
 
     with pytest.raises(TransientFailure):
         await send(deps, envelope_body())
@@ -474,7 +474,7 @@ async def test_find_parent_issue_rejects_a_candidate_missing_the_project_footer(
 
 async def test_linear_request_error_becomes_transient_failure(deps):
     """A Linear 4xx is a config problem; we still return 503 so Endor retries."""
-    deps.client.fail_next_create = LinearRequestError("bad state id")
+    deps.client.fail_next["create_issue"] = LinearRequestError("bad state id")
 
     with pytest.raises(TransientFailure):
         await send(deps, envelope_body())
@@ -482,7 +482,7 @@ async def test_linear_request_error_becomes_transient_failure(deps):
 
 async def test_failed_open_does_not_record_the_ledger(deps):
     body = envelope_body()
-    deps.client.fail_next_create = LinearTransientError("nope")
+    deps.client.fail_next["create_issue"] = LinearTransientError("nope")
 
     with pytest.raises(TransientFailure):
         await send(deps, body)
@@ -507,3 +507,24 @@ async def test_unknown_team_key_raises_key_error(deps):
     body = envelope_body()
     with pytest.raises(KeyError):
         await handle_event(deps, "nope", parse_envelope(body), body)
+
+
+async def test_created_sub_issue_log_carries_notification_uuid_and_identifier(
+    deps, caplog
+):
+    """Fix 4 / spec section 11: every lifecycle log line must be greppable by
+    notification_uuid, and a created-or-updated issue must log its Linear
+    identifier (linear_identifier, promoted to a top-level JSON key by
+    app.py's JsonLogFormatter) since the workspace slug needed to log a full
+    Linear URL is not available to this service."""
+    import logging
+
+    with caplog.at_level(logging.INFO, logger="endor_linear_bridge.handlers"):
+        await send(deps, envelope_body())
+
+    records = [r for r in caplog.records if "created sub-issue" in r.message]
+    assert records
+    assert records[0].notification_uuid == "notif-1"
+    assert records[0].team_key == "plat"
+    assert records[0].event == "open"
+    assert records[0].linear_identifier == "PLAT-2"

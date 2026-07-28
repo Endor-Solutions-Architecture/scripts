@@ -171,6 +171,21 @@ def resolution_comment(timestamp: datetime) -> str:
     )
 
 
+def parent_resolution_comment(timestamp: datetime) -> str:
+    """Comment for closing the parent tracking issue.
+
+    Distinct wording from resolution_comment(): that one says "this dependency",
+    which is wrong on the parent -- the parent closes because every sub-issue
+    (dependency) underneath it resolved, not because the parent itself is a
+    dependency.
+    """
+    stamp = timestamp.strftime("%Y-%m-%d %H:%M UTC")
+    return (
+        f"Resolved automatically by an Endor Labs scan on {stamp} — "
+        "all sub-issues for this project are resolved."
+    )
+
+
 def reopen_comment() -> str:
     return "New findings reported by Endor Labs — reopening."
 

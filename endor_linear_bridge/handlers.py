@@ -166,7 +166,13 @@ async def handle_resolve(
                 render.resolution_comment(datetime.now(timezone.utc)),
             )
             store.mark_resolved(session, row)
-            logger.info("resolved sub-issue %s", row.linear_identifier)
+            logger.info(
+                "resolved sub-issue %s",
+                row.linear_identifier,
+                extra=_log_context(
+                    team_key, envelope, linear_identifier=row.linear_identifier
+                ),
+            )
 
             remaining = store.count_unresolved_siblings(
                 session, row.parent_id, notification.uuid
@@ -179,10 +185,18 @@ async def handle_resolve(
                     )
                     await deps.client.create_comment(
                         parent.linear_issue_id,
-                        render.resolution_comment(datetime.now(timezone.utc)),
+                        render.parent_resolution_comment(datetime.now(timezone.utc)),
                     )
                     store.mark_resolved(session, parent)
-                    logger.info("resolved parent issue %s", parent.linear_identifier)
+                    logger.info(
+                        "resolved parent issue %s",
+                        parent.linear_identifier,
+                        extra=_log_context(
+                            team_key,
+                            envelope,
+                            linear_identifier=parent.linear_identifier,
+                        ),
+                    )
 
             store.record_event(session, notification.uuid, "resolve", body_hash)
             session.commit()
@@ -191,12 +205,17 @@ async def handle_resolve(
         raise TransientFailure(f"Linear call failed: {exc}") from exc
 
 
-def _log_context(team_key: str, envelope: Envelope) -> dict[str, str]:
-    return {
+def _log_context(
+    team_key: str, envelope: Envelope, *, linear_identifier: str | None = None
+) -> dict[str, str]:
+    context = {
         "team_key": team_key,
         "event": envelope.event,
         "notification_uuid": envelope.notification.uuid,
     }
+    if linear_identifier is not None:
+        context["linear_identifier"] = linear_identifier
+    return context
 
 
 def _description_for(
@@ -226,11 +245,12 @@ async def ensure_parent(
     resolved one -- whichever the stored status calls for.
     """
     notification = envelope.notification
+    team_key = runtime.config.key
     parent, _created = store.get_or_create_pending_parent(
         session,
         project_uuid=notification.project_uuid,
         context_id=notification.context_id,
-        team_key=runtime.config.key,
+        team_key=team_key,
     )
 
     if parent.status == STATUS_PENDING:
@@ -240,7 +260,13 @@ async def ensure_parent(
                 store.attach_linear_issue(
                     session, parent, adopted["id"], adopted["identifier"]
                 )
-                logger.info("adopted existing parent issue %s", adopted["identifier"])
+                logger.info(
+                    "adopted existing parent issue %s",
+                    adopted["identifier"],
+                    extra=_log_context(
+                        team_key, envelope, linear_identifier=adopted["identifier"]
+                    ),
+                )
                 return parent
 
             issue = await deps.client.create_issue(
@@ -251,7 +277,7 @@ async def ensure_parent(
                 description=render.parent_description(
                     project_uuid=notification.project_uuid,
                     context_id=notification.context_id,
-                    team_key=runtime.config.key,
+                    team_key=team_key,
                     project_name=notification.project_name,
                     project_app_url=notification.project_app_url,
                     policy_name=notification.policy_name,
@@ -263,9 +289,16 @@ async def ensure_parent(
             store.attach_linear_issue(
                 session, parent, issue["id"], issue["identifier"]
             )
-            logger.info("created parent issue %s", issue["identifier"])
-        else:
-            store.mark_open(session, parent)
+            logger.info(
+                "created parent issue %s",
+                issue["identifier"],
+                extra=_log_context(
+                    team_key, envelope, linear_identifier=issue["identifier"]
+                ),
+            )
+        # A PENDING parent with linear_issue_id already set cannot occur --
+        # attach_linear_issue() always sets status OPEN alongside the id, so
+        # there is no state transition that leaves the two disagreeing.
         return parent
 
     if parent.status == STATUS_RESOLVED:
@@ -276,7 +309,13 @@ async def ensure_parent(
             parent.linear_issue_id, render.reopen_comment()
         )
         store.mark_open(session, parent)
-        logger.info("reopened parent issue %s", parent.linear_identifier)
+        logger.info(
+            "reopened parent issue %s",
+            parent.linear_identifier,
+            extra=_log_context(
+                team_key, envelope, linear_identifier=parent.linear_identifier
+            ),
+        )
 
     return parent
 
@@ -298,7 +337,11 @@ async def _find_parent_issue(
 
     for candidate in await deps.client.search_issues(query):
         description = candidate.get("description") or ""
-        if query in description and context_footer in description and team_footer in description:
+        if (
+            query in description
+            and context_footer in description
+            and team_footer in description
+        ):
             return candidate
     return None
 
@@ -324,7 +367,10 @@ async def handle_open(
     try:
         with deps.session_factory() as session:
             if store.ledger_has(session, notification.uuid, "open", body_hash):
-                logger.info("duplicate open delivery ignored", extra=_log_context(team_key, envelope))
+                logger.info(
+                    "duplicate open delivery ignored",
+                    extra=_log_context(team_key, envelope),
+                )
                 return
 
             existing = store.get_notification(session, notification.uuid)
@@ -360,7 +406,11 @@ async def handle_open(
                         session, row, adopted["id"], adopted["identifier"]
                     )
                     logger.info(
-                        "adopted existing sub-issue %s", adopted["identifier"]
+                        "adopted existing sub-issue %s",
+                        adopted["identifier"],
+                        extra=_log_context(
+                            team_key, envelope, linear_identifier=adopted["identifier"]
+                        ),
                     )
                     await deps.client.update_issue(
                         adopted["id"],
@@ -383,7 +433,13 @@ async def handle_open(
                     store.attach_linear_issue(
                         session, row, issue["id"], issue["identifier"]
                     )
-                    logger.info("created sub-issue %s", issue["identifier"])
+                    logger.info(
+                        "created sub-issue %s",
+                        issue["identifier"],
+                        extra=_log_context(
+                            team_key, envelope, linear_identifier=issue["identifier"]
+                        ),
+                    )
 
             store.record_event(session, notification.uuid, "open", body_hash)
             session.commit()
@@ -405,6 +461,15 @@ async def _apply_current_state(
 
     `replace` distinguishes OPEN (payload is the complete set) from UPDATE
     (payload holds only new findings, so merge). Task 9 reuses this.
+
+    Invariant: a parent is open iff it has at least one unresolved child. So a
+    row transitioning out of `resolved` here must also ensure its parent is
+    open -- reusing ensure_parent(), which is a no-op when the parent is
+    already open and reopens it (with its own comment) when it is resolved.
+    Without this, a sub-issue reopened by a retried UPDATE that arrives after
+    a RESOLVE closed both the sub-issue and its (now childless) parent would
+    leave the parent closed forever, since count_unresolved_siblings() would
+    then always report at least one unresolved child.
     """
     notification = envelope.notification
 
@@ -421,6 +486,8 @@ async def _apply_current_state(
         await deps.client.update_issue(
             row.linear_issue_id, state_id=runtime.reopen_state_id
         )
+        await deps.client.create_comment(row.linear_issue_id, render.reopen_comment())
+        await ensure_parent(deps, session, runtime, envelope)
 
     await deps.client.update_issue(
         row.linear_issue_id,

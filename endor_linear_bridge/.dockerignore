@@ -1,6 +1,7 @@
 tests/
-__pycache__/
-*.pyc
+**/__pycache__/
+**/*.pyc
 *.db
 *.pem
 .pytest_cache/
+config.yaml
