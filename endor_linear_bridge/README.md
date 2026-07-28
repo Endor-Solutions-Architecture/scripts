@@ -82,6 +82,13 @@ All commands in this section run from the **repository root** — the directory
 that contains `endor_linear_bridge/` — except the Docker commands, which run
 from inside `endor_linear_bridge/` where `docker-compose.yml` lives.
 
+> **Run exactly one instance, with one worker process.** SQLite requires it
+> (a second writer hits lock contention), and issue creation is serialized
+> per project through an in-process lock, which multiple processes would
+> defeat — two workers handling overlapping deliveries could each create a
+> parent issue. Do not pass `--workers` to uvicorn. Webhook volume is
+> scan-driven and low; one worker is not a bottleneck.
+
 ### Local
 
 ```bash
@@ -109,6 +116,20 @@ volume (as `docker-compose.yml`'s `bridge-data` volume is) from the image's
 directory contents — a bind-mounted host directory is not affected and should
 already be writable by uid `10001`, or by anyone if that is acceptable in your
 environment.
+
+**Upgrading a deployment that previously ran as root:** a named volume
+populated by an older root-running container keeps its root ownership, and the
+non-root container will fail with permission errors on startup. Before the
+first deployment on such a volume, change its ownership to the container's
+user. Note that Compose prefixes the volume name with the project name —
+find the real name with `docker volume ls` (with this directory layout it is
+`endor_linear_bridge_bridge-data`), then:
+
+```bash
+docker run --rm -v endor_linear_bridge_bridge-data:/data alpine chown -R 10001:10001 /data
+```
+
+Fresh volumes need nothing.
 
 > **The database is the only mapping from Endor notification UUID to Linear
 > issue.** Losing it orphans open tickets and the next scan creates duplicates.
@@ -246,7 +267,12 @@ on (notification uuid, event, payload hash). Edit a field to make it a new event
    until the next new finding or a full resolve. This affects every Endor webhook
    consumer. A nightly reconciliation job against the Endor REST API is the
    documented upgrade path.
-2. **Retry exhaustion.** Three retries at 1h/2h/4h; a longer outage drops events.
+2. **Retry exhaustion.** Three retries at 1h/2h/4h; a longer outage drops
+   events. One extra consequence of crash-safe issue creation: an OPEN that
+   fails on every retry leaves a permanent `pending` row with no Linear
+   issue, which counts as an unresolved child and keeps its parent issue from
+   auto-closing. If a parent stays open with no visible open sub-issues,
+   delete the stale `pending` rows from `notification_issues`.
 3. **The database is the only issue mapping.** See the warning above.
 4. **Flapping dependencies accumulate closed sub-issues.** See "How issues are
    structured".

@@ -1,4 +1,7 @@
+import asyncio
+
 import pytest
+from sqlalchemy import select
 
 from endor_linear_bridge import store
 from endor_linear_bridge.config import Config, TeamConfig
@@ -6,7 +9,12 @@ from endor_linear_bridge.envelope import parse_envelope
 from endor_linear_bridge.handlers import HandlerDeps, TransientFailure, handle_event
 from endor_linear_bridge.linear_cache import TeamRuntime
 from endor_linear_bridge.linear_client import LinearRequestError, LinearTransientError
-from endor_linear_bridge.models import STATUS_OPEN, STATUS_PENDING, STATUS_RESOLVED
+from endor_linear_bridge.models import (
+    STATUS_OPEN,
+    STATUS_PENDING,
+    STATUS_RESOLVED,
+    ProjectParent,
+)
 from endor_linear_bridge.render import (
     NOTIFICATION_FOOTER_PREFIX,
     PARENT_PROJECT_FOOTER_PREFIX,
@@ -125,6 +133,15 @@ async def test_open_creates_parent_then_sub_issue(deps):
     assert creates[0]["title"] == "[Endor Labs] webapp — main"
     assert creates[1]["parent_id"] == "i1"
     assert creates[1]["title"] == "[Dep] npm://lodash"
+
+
+async def test_happy_path_open_performs_no_adoption_search(deps):
+    """A2 promises zero extra cost on the happy path: a row this request just
+    created cannot have an orphaned Linear issue, so nothing to search for.
+    The adoption search runs only when a pending row pre-existed the request."""
+    await send(deps, envelope_body())
+
+    assert deps.client.calls_named("search_issues") == []
 
 
 async def test_open_persists_rows_as_open(deps):
@@ -286,16 +303,67 @@ async def test_open_replaces_findings_rather_than_merging(deps):
 
 
 async def test_transient_linear_failure_leaves_a_pending_row(deps):
+    """A2: the pending rows must survive the failed request -- they are what
+    lets the retry adopt an orphaned Linear issue instead of duplicating it.
+
+    Read back with read-only accessors: the previous version of this test
+    fetched via get_or_create_pending_parent, which creates the very row it
+    then asserted on, so it passed whether or not the row survived.
+    """
     deps.client.fail_next["create_issue"] = LinearTransientError("429 forever")
 
     with pytest.raises(TransientFailure):
         await send(deps, envelope_body())
 
     with deps.session_factory() as session:
-        parent, _ = store.get_or_create_pending_parent(
-            session, project_uuid="proj-1", context_id="main", team_key="plat"
-        )
+        parent = session.execute(
+            select(ProjectParent).where(
+                ProjectParent.project_uuid == "proj-1",
+                ProjectParent.context_id == "main",
+                ProjectParent.team_key == "plat",
+            )
+        ).scalar_one_or_none()
+        assert parent is not None
         assert parent.status == STATUS_PENDING
+        assert parent.linear_issue_id is None
+        row = store.get_notification(session, "notif-1")
+        assert row is not None
+        assert row.status == STATUS_PENDING
+
+
+async def test_parent_linear_ids_survive_a_failed_sub_issue_create(session_factory):
+    """A2 backstop: once Linear has created the parent issue, its ids must be
+    committed immediately. Otherwise a failure later in the same request rolls
+    them back, and duplicate prevention for the parent rests entirely on
+    Linear's eventually-consistent search index."""
+
+    class FailSubIssueCreate(FakeLinearClient):
+        async def create_issue(self, **kwargs):
+            if self.calls_named("create_issue"):  # parent creation succeeded
+                self.calls.append(("create_issue", kwargs))
+                raise LinearTransientError("503 on the sub-issue create")
+            return await super().create_issue(**kwargs)
+
+    deps = HandlerDeps(
+        session_factory=session_factory,
+        client=FailSubIssueCreate(),
+        runtimes={"plat": RUNTIME},
+        config=CONFIG,
+    )
+
+    with pytest.raises(TransientFailure):
+        await send(deps, envelope_body())
+
+    with deps.session_factory() as session:
+        parent = session.execute(
+            select(ProjectParent).where(
+                ProjectParent.project_uuid == "proj-1",
+                ProjectParent.context_id == "main",
+                ProjectParent.team_key == "plat",
+            )
+        ).scalar_one()
+        assert parent.linear_issue_id == "i1"
+        assert parent.status == STATUS_OPEN
 
 
 async def test_retry_after_crash_adopts_the_existing_sub_issue(deps):
@@ -327,6 +395,39 @@ async def test_retry_after_crash_adopts_the_existing_sub_issue(deps):
 
     assert deps.client.calls_named("create_issue") == []
     assert deps.client.calls_named("search_issues")
+    with deps.session_factory() as session:
+        row = store.get_notification(session, "notif-1")
+        assert row.linear_issue_id == orphan["id"]
+        assert row.linear_identifier == "PLAT-42"
+        assert row.status == STATUS_OPEN
+
+
+async def test_adopted_sub_issue_ids_survive_a_failed_description_update(deps):
+    """A2 backstop, sub-issue side: adoption ids commit before the follow-up
+    description update, so a failure there cannot roll the adoption back."""
+    with deps.session_factory() as session:
+        parent, _ = store.get_or_create_pending_parent(
+            session, project_uuid="proj-1", context_id="main", team_key="plat"
+        )
+        store.attach_linear_issue(session, parent, "i-parent", "PLAT-1")
+        store.create_pending_notification(
+            session,
+            notification_uuid="notif-1",
+            team_key="plat",
+            parent_id=parent.id,
+            aggregation_target="npm://lodash",
+        )
+        session.commit()
+    deps.client.issues["i-parent"] = dict(id="i-parent", identifier="PLAT-1")
+    orphan = deps.client.seed_issue(
+        description=f"body\n{NOTIFICATION_FOOTER_PREFIX} notif-1",
+        identifier="PLAT-42",
+    )
+    deps.client.fail_next["update_issue"] = LinearTransientError("503")
+
+    with pytest.raises(TransientFailure):
+        await send(deps, envelope_body())
+
     with deps.session_factory() as session:
         row = store.get_notification(session, "notif-1")
         assert row.linear_issue_id == orphan["id"]
@@ -433,6 +534,37 @@ async def test_pending_parent_ignores_a_different_team(deps):
             session, project_uuid="proj-1", context_id="main", team_key="plat"
         )
         assert parent.linear_identifier != "SEC-7"
+
+
+async def test_concurrent_opens_for_the_same_project_create_one_parent(
+    session_factory,
+):
+    """Two overlapping OPENs for the same (project, context, team) must not
+    each create a parent issue in Linear. The fake yields control inside
+    create_issue, as the real client does at every HTTP call, so the two
+    handlers genuinely interleave."""
+
+    class YieldingClient(FakeLinearClient):
+        async def create_issue(self, **kwargs):
+            await asyncio.sleep(0)
+            return await super().create_issue(**kwargs)
+
+    deps = HandlerDeps(
+        session_factory=session_factory,
+        client=YieldingClient(),
+        runtimes={"plat": RUNTIME},
+        config=CONFIG,
+    )
+    body1 = envelope_body(uuid="notif-1", target="npm://lodash")
+    body2 = envelope_body(uuid="notif-2", target="npm://axios")
+
+    await asyncio.gather(send(deps, body1), send(deps, body2))
+
+    parents = [
+        call for call in deps.client.calls_named("create_issue")
+        if call["parent_id"] is None
+    ]
+    assert len(parents) == 1
 
 
 async def test_find_parent_issue_rejects_a_candidate_missing_the_project_footer():

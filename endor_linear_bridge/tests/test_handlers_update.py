@@ -125,6 +125,31 @@ async def test_update_for_unknown_uuid_falls_back_to_create(deps):
         assert row.status == STATUS_OPEN
 
 
+async def test_fallback_create_merges_with_findings_from_a_failed_open(deps):
+    """An OPEN that fails after its A2 durability commit leaves the complete
+    finding set in the database. If an UPDATE (whose payload holds only new
+    findings) arrives before the OPEN retry, its create-instead fallback must
+    merge with that stored set, not replace it -- issue content always renders
+    from the stored union, never from a single payload."""
+    deps.client.fail_next["create_issue"] = LinearTransientError("boom")
+    with pytest.raises(TransientFailure):
+        await send(
+            deps,
+            envelope_body(event="open", findings=(("f1", "FINDING_LEVEL_HIGH"),)),
+        )
+
+    await send(
+        deps,
+        envelope_body(event="update", findings=(("f2", "FINDING_LEVEL_LOW"),)),
+    )
+
+    with deps.session_factory() as session:
+        assert {f.finding_uuid for f in store.all_findings(session, "notif-1")} == {
+            "f1",
+            "f2",
+        }
+
+
 async def test_duplicate_update_delivery_is_a_no_op(deps):
     await open_first(deps)
     body = envelope_body(event="update", findings=(("f2", "FINDING_LEVEL_HIGH"),))

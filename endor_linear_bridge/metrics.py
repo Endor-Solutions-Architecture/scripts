@@ -12,7 +12,7 @@ from prometheus_client import Counter, Gauge, Histogram
 
 EVENTS_RECEIVED = Counter(
     "events_received_total",
-    "Webhook events accepted and processed",
+    "Webhook deliveries counted on arrival, once authenticated and parsed",
     ["team", "event"],
 )
 

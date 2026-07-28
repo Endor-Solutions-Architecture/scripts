@@ -1,8 +1,10 @@
 """All SQL for the bridge lives here.
 
 Handlers call these functions and never touch the ORM directly. Every function
-takes an open Session; the caller owns the transaction boundary so a whole
-request commits atomically.
+takes an open Session and only flushes; the caller owns the transaction
+boundary. handlers.py commits at deliberate points mid-request (the A2
+durability points: pending rows before the first Linear call, Linear ids the
+moment they are attached) and once at the end for everything else.
 """
 
 from __future__ import annotations

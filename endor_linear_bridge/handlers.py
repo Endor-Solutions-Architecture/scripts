@@ -15,8 +15,9 @@ linear_client.py. Two invariants drive the design:
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Sequence
 
@@ -48,6 +49,15 @@ class HandlerDeps:
     client: Any
     runtimes: dict[str, TeamRuntime]
     config: Config
+    # Single-flight guard for parent creation: get_or_create_pending_parent is
+    # SELECT-then-INSERT and the handlers await Linear mid-request, so two
+    # overlapping OPENs for one (project, context, team) could each create a
+    # parent issue. An in-process lock is sufficient because the service runs
+    # as a single instance (mandated by SQLite; see the README). One lock per
+    # parent group; the dict is bounded by the number of parent groups.
+    parent_locks: dict[tuple[str, str, str], asyncio.Lock] = field(
+        default_factory=dict
+    )
 
 
 async def handle_event(
@@ -77,6 +87,18 @@ async def handle_event(
 async def handle_open(
     deps: HandlerDeps, team_key: str, envelope: Envelope, raw_body: bytes
 ) -> None:
+    notification = envelope.notification
+    lock = deps.parent_locks.setdefault(
+        (notification.project_uuid, notification.context_id, team_key),
+        asyncio.Lock(),
+    )
+    async with lock:
+        await _handle_open_locked(deps, team_key, envelope, raw_body)
+
+
+async def _handle_open_locked(
+    deps: HandlerDeps, team_key: str, envelope: Envelope, raw_body: bytes
+) -> None:
     runtime = deps.runtimes[team_key]
     notification = envelope.notification
     body_hash = store.payload_hash(raw_body)
@@ -102,7 +124,12 @@ async def handle_open(
                 session.commit()
                 return
 
-            parent = await ensure_parent(deps, session, runtime, envelope)
+            parent, parent_created = store.get_or_create_pending_parent(
+                session,
+                project_uuid=notification.project_uuid,
+                context_id=notification.context_id,
+                team_key=team_key,
+            )
 
             row = existing or store.create_pending_notification(
                 session,
@@ -112,16 +139,38 @@ async def handle_open(
                 aggregation_target=notification.aggregation.target_name,
             )
 
-            store.replace_findings(session, notification.uuid, envelope.findings)
+            if envelope.event == "update":
+                # Create-instead fallback from handle_update: its payload holds
+                # only new findings, so merge with whatever a previous failed
+                # OPEN durably committed rather than erasing it.
+                store.upsert_findings(session, notification.uuid, envelope.findings)
+            else:
+                store.replace_findings(session, notification.uuid, envelope.findings)
+
+            # A2 durability point: the pending rows must survive a failure in
+            # any Linear call below, so a retry can adopt the orphaned issue
+            # instead of creating a duplicate. Commit them before the first
+            # Linear call; the rest of the request commits at the end.
+            session.commit()
+
+            await _ensure_parent_issue(
+                deps, session, runtime, envelope, parent, created=parent_created
+            )
+
             findings = store.all_findings(session, notification.uuid)
             severity = max_severity([f.severity for f in findings])
 
             if row.linear_issue_id is None:
-                adopted = await _find_sub_issue(deps, notification.uuid)
+                # Adoption only applies to a pending row left by a previous
+                # failed request; a row created above has no orphan to find.
+                adopted = None
+                if existing is not None:
+                    adopted = await _find_sub_issue(deps, notification.uuid)
                 if adopted is not None:
                     store.attach_linear_issue(
                         session, row, adopted["id"], adopted["identifier"]
                     )
+                    session.commit()  # A2 backstop, as in _ensure_parent_issue
                     logger.info(
                         "adopted existing sub-issue %s",
                         adopted["identifier"],
@@ -150,6 +199,7 @@ async def handle_open(
                     store.attach_linear_issue(
                         session, row, issue["id"], issue["identifier"]
                     )
+                    session.commit()  # A2 backstop, as in _ensure_parent_issue
                     logger.info(
                         "created sub-issue %s",
                         issue["identifier"],
@@ -346,23 +396,60 @@ async def ensure_parent(
 
     Creates it, adopts an orphan from a previous crashed run, or reopens a
     resolved one -- whichever the stored status calls for.
+
+    May COMMIT the caller's session (the A2 backstop in _ensure_parent_issue
+    commits Linear ids as soon as they are attached). Safe for
+    _apply_current_state's mid-request call today only because a sub-issue
+    with Linear ids implies its parent already has ids too (attach always
+    sets both together), so the committing branch is unreachable from there.
+    Revisit this if that invariant ever changes.
     """
     notification = envelope.notification
-    team_key = runtime.config.key
-    parent, _created = store.get_or_create_pending_parent(
+    parent, created = store.get_or_create_pending_parent(
         session,
         project_uuid=notification.project_uuid,
         context_id=notification.context_id,
-        team_key=team_key,
+        team_key=runtime.config.key,
     )
+    return await _ensure_parent_issue(
+        deps, session, runtime, envelope, parent, created=created
+    )
+
+
+async def _ensure_parent_issue(
+    deps: HandlerDeps,
+    session: Session,
+    runtime: TeamRuntime,
+    envelope: Envelope,
+    parent: ProjectParent,
+    *,
+    created: bool,
+) -> ProjectParent:
+    """The Linear half of ensure_parent: create, adopt, or reopen the issue.
+
+    Split from the row lookup so handle_open can commit the pending row
+    durably before this makes the first Linear call (A2). `created` gates the
+    adoption search: a row this request just created cannot have an orphaned
+    Linear issue, so the happy path pays no search cost. (Consequence: after a
+    lost database every row is fresh, so recovery from Linear search is not
+    automatic -- back up the database, per spec section 15.3.)
+    """
+    notification = envelope.notification
+    team_key = runtime.config.key
 
     if parent.status == STATUS_PENDING:
         if parent.linear_issue_id is None:
-            adopted = await _find_parent_issue(deps, runtime, envelope)
+            adopted = None
+            if not created:
+                adopted = await _find_parent_issue(deps, runtime, envelope)
             if adopted is not None:
                 store.attach_linear_issue(
                     session, parent, adopted["id"], adopted["identifier"]
                 )
+                # A2 backstop: commit the ids as soon as they are known, so a
+                # failure later in the request cannot roll them back and force
+                # the retry to depend on Linear's search index again.
+                session.commit()
                 logger.info(
                     "adopted existing parent issue %s",
                     adopted["identifier"],
@@ -392,6 +479,7 @@ async def ensure_parent(
             store.attach_linear_issue(
                 session, parent, issue["id"], issue["identifier"]
             )
+            session.commit()  # A2 backstop, as above
             logger.info(
                 "created parent issue %s",
                 issue["identifier"],
