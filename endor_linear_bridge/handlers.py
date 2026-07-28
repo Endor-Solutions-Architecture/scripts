@@ -71,6 +71,103 @@ async def handle_event(
         raise ValueError(f"unsupported event: {envelope.event}")
 
 
+# --- OPEN --------------------------------------------------------------
+
+
+async def handle_open(
+    deps: HandlerDeps, team_key: str, envelope: Envelope, raw_body: bytes
+) -> None:
+    runtime = deps.runtimes[team_key]
+    notification = envelope.notification
+    body_hash = store.payload_hash(raw_body)
+
+    try:
+        with deps.session_factory() as session:
+            if store.ledger_has(session, notification.uuid, "open", body_hash):
+                logger.info(
+                    "duplicate open delivery ignored",
+                    extra=_log_context(team_key, envelope),
+                )
+                return
+
+            existing = store.get_notification(session, notification.uuid)
+
+            if existing is not None and existing.status != STATUS_PENDING:
+                # A resent OPEN for a notification we already track. Its payload
+                # is complete, so replace the stored set rather than merging.
+                await _apply_current_state(
+                    deps, session, runtime, envelope, existing, replace=True
+                )
+                store.record_event(session, notification.uuid, "open", body_hash)
+                session.commit()
+                return
+
+            parent = await ensure_parent(deps, session, runtime, envelope)
+
+            row = existing or store.create_pending_notification(
+                session,
+                notification_uuid=notification.uuid,
+                team_key=team_key,
+                parent_id=parent.id,
+                aggregation_target=notification.aggregation.target_name,
+            )
+
+            store.replace_findings(session, notification.uuid, envelope.findings)
+            findings = store.all_findings(session, notification.uuid)
+            severity = max_severity([f.severity for f in findings])
+
+            if row.linear_issue_id is None:
+                adopted = await _find_sub_issue(deps, notification.uuid)
+                if adopted is not None:
+                    store.attach_linear_issue(
+                        session, row, adopted["id"], adopted["identifier"]
+                    )
+                    logger.info(
+                        "adopted existing sub-issue %s",
+                        adopted["identifier"],
+                        extra=_log_context(
+                            team_key, envelope, linear_identifier=adopted["identifier"]
+                        ),
+                    )
+                    await deps.client.update_issue(
+                        adopted["id"],
+                        description=_description_for(deps, envelope, findings),
+                        priority=runtime.priority_for_severity(severity),
+                        label_ids=runtime.label_ids_for(severity),
+                    )
+                else:
+                    issue = await deps.client.create_issue(
+                        team_id=runtime.linear_team_id,
+                        title=render.sub_issue_title(
+                            notification.aggregation.target_name
+                        ),
+                        description=_description_for(deps, envelope, findings),
+                        parent_id=parent.linear_issue_id,
+                        state_id=runtime.open_state_id,
+                        priority=runtime.priority_for_severity(severity),
+                        label_ids=runtime.label_ids_for(severity),
+                    )
+                    store.attach_linear_issue(
+                        session, row, issue["id"], issue["identifier"]
+                    )
+                    logger.info(
+                        "created sub-issue %s",
+                        issue["identifier"],
+                        extra=_log_context(
+                            team_key, envelope, linear_identifier=issue["identifier"]
+                        ),
+                    )
+
+            store.record_event(session, notification.uuid, "open", body_hash)
+            session.commit()
+
+    except LinearError as exc:
+        raise TransientFailure(f"Linear call failed: {exc}") from exc
+
+
+# --- UPDATE --------------------------------------------------------------
+
+
 async def handle_update(
     deps: HandlerDeps, team_key: str, envelope: Envelope, raw_body: bytes
 ) -> None:
@@ -127,6 +224,9 @@ async def handle_update(
 
     except LinearError as exc:
         raise TransientFailure(f"Linear call failed: {exc}") from exc
+
+
+# --- RESOLVE --------------------------------------------------------------
 
 
 async def handle_resolve(
@@ -203,6 +303,9 @@ async def handle_resolve(
 
     except LinearError as exc:
         raise TransientFailure(f"Linear call failed: {exc}") from exc
+
+
+# --- Shared helpers --------------------------------------------------------
 
 
 def _log_context(
@@ -355,97 +458,6 @@ async def _find_sub_issue(
         if query in (candidate.get("description") or ""):
             return candidate
     return None
-
-
-async def handle_open(
-    deps: HandlerDeps, team_key: str, envelope: Envelope, raw_body: bytes
-) -> None:
-    runtime = deps.runtimes[team_key]
-    notification = envelope.notification
-    body_hash = store.payload_hash(raw_body)
-
-    try:
-        with deps.session_factory() as session:
-            if store.ledger_has(session, notification.uuid, "open", body_hash):
-                logger.info(
-                    "duplicate open delivery ignored",
-                    extra=_log_context(team_key, envelope),
-                )
-                return
-
-            existing = store.get_notification(session, notification.uuid)
-
-            if existing is not None and existing.status != STATUS_PENDING:
-                # A resent OPEN for a notification we already track. Its payload
-                # is complete, so replace the stored set rather than merging.
-                await _apply_current_state(
-                    deps, session, runtime, envelope, existing, replace=True
-                )
-                store.record_event(session, notification.uuid, "open", body_hash)
-                session.commit()
-                return
-
-            parent = await ensure_parent(deps, session, runtime, envelope)
-
-            row = existing or store.create_pending_notification(
-                session,
-                notification_uuid=notification.uuid,
-                team_key=team_key,
-                parent_id=parent.id,
-                aggregation_target=notification.aggregation.target_name,
-            )
-
-            store.replace_findings(session, notification.uuid, envelope.findings)
-            findings = store.all_findings(session, notification.uuid)
-            severity = max_severity([f.severity for f in findings])
-
-            if row.linear_issue_id is None:
-                adopted = await _find_sub_issue(deps, notification.uuid)
-                if adopted is not None:
-                    store.attach_linear_issue(
-                        session, row, adopted["id"], adopted["identifier"]
-                    )
-                    logger.info(
-                        "adopted existing sub-issue %s",
-                        adopted["identifier"],
-                        extra=_log_context(
-                            team_key, envelope, linear_identifier=adopted["identifier"]
-                        ),
-                    )
-                    await deps.client.update_issue(
-                        adopted["id"],
-                        description=_description_for(deps, envelope, findings),
-                        priority=runtime.priority_for_severity(severity),
-                        label_ids=runtime.label_ids_for(severity),
-                    )
-                else:
-                    issue = await deps.client.create_issue(
-                        team_id=runtime.linear_team_id,
-                        title=render.sub_issue_title(
-                            notification.aggregation.target_name
-                        ),
-                        description=_description_for(deps, envelope, findings),
-                        parent_id=parent.linear_issue_id,
-                        state_id=runtime.open_state_id,
-                        priority=runtime.priority_for_severity(severity),
-                        label_ids=runtime.label_ids_for(severity),
-                    )
-                    store.attach_linear_issue(
-                        session, row, issue["id"], issue["identifier"]
-                    )
-                    logger.info(
-                        "created sub-issue %s",
-                        issue["identifier"],
-                        extra=_log_context(
-                            team_key, envelope, linear_identifier=issue["identifier"]
-                        ),
-                    )
-
-            store.record_event(session, notification.uuid, "open", body_hash)
-            session.commit()
-
-    except LinearError as exc:
-        raise TransientFailure(f"Linear call failed: {exc}") from exc
 
 
 async def _apply_current_state(
