@@ -183,3 +183,4 @@ opengrep_jwk_private_material/tmp-logs/
 audit_project_settings/*.json
 
 docs/superpowers/*
+endor_linear_bridge/config.yaml

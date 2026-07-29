@@ -8,6 +8,17 @@ on update, close on resolve.
 Endor Labs ships first-class ticketing integrations for Jira and Azure DevOps
 Boards but not Linear. This service fills that gap with no product changes.
 
+> **Deploying this?** Follow **[DEPLOYMENT.md](DEPLOYMENT.md)** — a
+> step-by-step runbook written from a live deployment, covering the Docker
+> setup, HTTPS exposure, the API-only custom-template installation, the Endor
+> policy, and the failure modes actually hit along the way. This README is the
+> reference; that document is the path.
+>
+> **Evaluating it?** See **[IMPLEMENTATION.md](IMPLEMENTATION.md)** — a
+> high-level overview of the architecture, design decisions, reliability
+> model, and a support matrix of exactly what is and is not covered, with
+> current verification status.
+
 ## How issues are structured
 
 ```
@@ -149,7 +160,7 @@ For each Linear team — example team key `PLAT`:
 | URL | `https://<bridge-host>/hooks/plat` — **must be https**, Endor rejects plain http |
 | Auth method | **API Key**, value = `BRIDGE_BEARER_TOKEN` |
 | HMAC | **Enabled**, secret = `ENDOR_HMAC_PLAT`. Required — the bridge has no opt-out |
-| Custom template | **Three separate fields, one per lifecycle operation** — `templates/open.tmpl` → the target's *Open action* template, `templates/update.tmpl` → its *Update action* template, `templates/resolve.tmpl` → its *Resolve action* template. **⚠ Unconfirmed against the live tenant UI — verify the exact field names on first setup** (see "Known limitations" below). **Failure mode if this is wrong:** pasting the same template (e.g. `open.tmpl`) into all three fields yields a bridge that creates issues and never closes them — a silent failure that looks fine until the first dependency is actually fixed. |
+| Custom template | **Not settable in the UI** — the dialog has no template fields (confirmed against a live tenant, 2026-07-29). Set `spec.custom_template.webhook_template` via `endorctl api update` with one template per lifecycle operation: `open_action_template` ← `templates/open.tmpl`, `update_action_template` ← `templates/update.tmpl`, `resolve_action_template` ← `templates/resolve.tmpl`. Exact commands and the two API pitfalls are in [DEPLOYMENT.md](DEPLOYMENT.md) Part 5. **Do not re-save the target from the UI afterwards** — the form may silently wipe the templates; make later edits via the API with a field mask. |
 
 **2. Action policy**
 
@@ -252,16 +263,15 @@ on (notification uuid, event, payload hash). Edit a field to make it a new event
 
 ## Known limitations
 
-0. **Highest priority to confirm during first live setup: the custom template
-   → action field mapping.** The Endor setup table above documents
-   `open.tmpl` / `update.tmpl` / `resolve.tmpl` going into three separate
-   per-operation template fields (Open / Update / Resolve action templates),
-   but this has not been verified against a live tenant's UI — the exact
-   field names are inferred, not confirmed. Get this wrong (e.g. the same
-   template pasted into all three) and the bridge creates issues but never
-   closes them, silently, until someone notices a "resolved" dependency still
-   has an open ticket. Confirm this first, before anything else, on the first
-   live setup.
+0. **The custom-template mapping is confirmed** (live tenant, 2026-07-29):
+   there are no UI fields; the three templates go into
+   `spec.custom_template.webhook_template.{open,update,resolve}_action_template`
+   via `endorctl api update`, and the API server validates them with the real
+   template engine on every update ([DEPLOYMENT.md](DEPLOYMENT.md) Part 5).
+   The OPEN path is verified end to end against a live scan (issues created in
+   Linear). UPDATE and RESOLVE templates are accepted and validated
+   server-side but their live delivery has not been exercised yet — run
+   DEPLOYMENT.md Part 8 before relying on automatic issue closure.
 1. **Partial resolution does not fire a webhook.** Endor only sends UPDATE when
    *new* findings appear, so a sub-issue whose findings partly resolve goes stale
    until the next new finding or a full resolve. This affects every Endor webhook
