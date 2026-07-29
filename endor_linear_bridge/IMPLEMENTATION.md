@@ -48,6 +48,8 @@ Endor (endorctl or cloud) ──HTTPS+HMAC──▶ FastAPI app (app.py)
                               store.py (SQL)   linear_client.py (GraphQL)
                                         │        │
                                      SQLite    Linear API
+
+Operator ──▶ GET /dashboard (dashboard/, server-rendered Jinja2, read-only)
 ```
 
 Strict module boundaries: only `store.py` contains SQL, only
@@ -56,10 +58,12 @@ content always renders from the finding rows in the database — never from a
 single webhook payload — because Endor's UPDATE payloads carry only *new*
 findings.
 
-Four small tables: `project_parents` (parent issues), `notification_issues`
+Five small tables: `project_parents` (parent issues), `notification_issues`
 (sub-issues, keyed by Endor notification UUID), `notification_findings` (the
 union of findings ever reported per notification), `processed_events`
-(idempotency ledger keyed on notification + event + payload hash).
+(idempotency ledger keyed on notification + event + payload hash), and
+`delivery_log` (append-only observability row per webhook, pruned after 30
+days — feeds the dashboard only, nothing in the pipeline reads it back).
 
 ## Reliability model
 
@@ -104,6 +108,13 @@ mid-flight:
   `events_failed_total{team,event,reason}`, `linear_api_latency_seconds`,
   `linear_rate_limit_remaining`.
 - `/healthz` (liveness) and `/readyz` (DB + Linear caches loaded).
+- **Mission Control** (`/dashboard`): a read-only operator dashboard served by
+  the bridge itself — Overview (health verdict, stat cards, volume chart,
+  failure classes), Deliveries (searchable log with a per-delivery trace
+  drawer), Teams (resolved Linear ids per team), Configuration (effective
+  runtime values, secrets never shown). Backed by an append-only
+  `delivery_log` table written after every webhook, including rejections.
+  Unauthenticated like `/metrics` — restrict at the ingress.
 
 ---
 
@@ -125,6 +136,7 @@ mid-flight:
 | Payload replay for iteration | ✅ `tools/replay.py` re-signs and re-sends captured payloads |
 | Description truncation for large finding sets | ✅ Above `max_findings_per_issue` (default 50), highest severity first, with a link to Endor |
 | Findings with no dependency | ✅ Grouped under a "Findings with no dependencies" sub-issue |
+| Operator dashboard (`/dashboard`) | ✅ Read-only Mission Control: overview, delivery log + trace drawer, teams, configuration |
 
 ## What is not supported / known limitations
 
@@ -138,11 +150,12 @@ mid-flight:
 | Database loss | The DB is the only notification→issue mapping; losing it means duplicate tickets on the next scan. Back it up (it is tiny). Recovery footers make a manual rebuild via Linear search possible |
 | Flapping dependencies | Accumulate closed sub-issues by design (regression = new issue, honest history) |
 | Custom templates via the Endor UI | Not possible — the UI has no template fields; templates are installed via the API (DEPLOYMENT.md Part 5) |
+| Dashboard authentication | None by deployment decision — restrict `/dashboard` (and `/metrics`) at the ingress. An "Issue tree" view exists in the design handoff but is not built and not shown in the nav |
 | First-class `ACTION_TYPE_LINEAR` in the Endor product | Future product work, out of scope for the bridge |
 
 ## Verification status
 
-- **Test suite:** 297 tests — unit coverage for auth/envelope/severity/
+- **Test suite:** 340 tests — unit coverage for auth/envelope/severity/
   rendering/config, handler coverage against a mocked Linear API (including
   crash-window, adoption, concurrency, and idempotency scenarios), and an
   end-to-end lifecycle test through the real FastAPI app with real HMAC

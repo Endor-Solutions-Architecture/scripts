@@ -10,9 +10,10 @@ moment they are attached) and once at the end for everything else.
 from __future__ import annotations
 
 import hashlib
+from datetime import datetime
 from typing import Sequence
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session
 
 from endor_linear_bridge.models import (
@@ -20,6 +21,7 @@ from endor_linear_bridge.models import (
     STATUS_PENDING,
     STATUS_RESOLVED,
     UNRESOLVED_STATUSES,
+    DeliveryLog,
     NotificationFinding,
     NotificationIssue,
     ProcessedEvent,
@@ -216,6 +218,177 @@ def all_findings(
         .order_by(NotificationFinding.finding_uuid)
     )
     return list(session.execute(stmt).scalars())
+
+
+def record_delivery(session: Session, **fields: object) -> DeliveryLog:
+    """Append one row to the delivery log. Caller owns the commit."""
+    row = DeliveryLog(received_at=utcnow(), **fields)
+    session.add(row)
+    session.flush()
+    return row
+
+
+def _delivery_window(stmt, since: datetime | None):
+    if since is not None:
+        stmt = stmt.where(DeliveryLog.received_at >= since)
+    return stmt
+
+
+def recent_deliveries(
+    session: Session,
+    *,
+    since: datetime | None,
+    event_type: str | None = None,
+    failed_only: bool = False,
+    search: str | None = None,
+    limit: int = 200,
+) -> list[DeliveryLog]:
+    stmt = _delivery_window(select(DeliveryLog), since)
+    if event_type is not None:
+        stmt = stmt.where(DeliveryLog.event_type == event_type)
+    if failed_only:
+        stmt = stmt.where(DeliveryLog.outcome.in_(("retrying", "rejected")))
+    if search:
+        pattern = f"%{search}%"
+        stmt = stmt.where(
+            or_(
+                DeliveryLog.notification_uuid.like(pattern),
+                DeliveryLog.target.like(pattern),
+                DeliveryLog.linear_identifier.like(pattern),
+            )
+        )
+    stmt = stmt.order_by(DeliveryLog.id.desc()).limit(limit)
+    return list(session.execute(stmt).scalars())
+
+
+def delivery_summary(session: Session, *, since: datetime | None) -> dict[str, int]:
+    """Counts by outcome plus the overall total, for the Deliveries summary strip."""
+    stmt = _delivery_window(
+        select(DeliveryLog.outcome, func.count()).group_by(DeliveryLog.outcome),
+        since,
+    )
+    by_outcome = {outcome: int(n) for outcome, n in session.execute(stmt)}
+    return {
+        "received": sum(by_outcome.values()),
+        "ok": by_outcome.get("ok", 0),
+        "noop": by_outcome.get("noop", 0),
+        "retrying": by_outcome.get("retrying", 0),
+        "rejected": by_outcome.get("rejected", 0),
+    }
+
+
+def team_delivery_stats(
+    session: Session, *, since: datetime | None
+) -> dict[str, dict[str, object]]:
+    """Per-team event counts, failure count, and last event time."""
+    stmt = _delivery_window(
+        select(
+            DeliveryLog.team,
+            DeliveryLog.event_type,
+            DeliveryLog.outcome,
+            func.count(),
+            func.max(DeliveryLog.received_at),
+        ).group_by(DeliveryLog.team, DeliveryLog.event_type, DeliveryLog.outcome),
+        since,
+    )
+    stats: dict[str, dict[str, object]] = {}
+    for team, event_type, outcome, count, last_at in session.execute(stmt):
+        entry = stats.setdefault(
+            team,
+            {"open": 0, "update": 0, "resolve": 0, "failed": 0, "last_event_at": None},
+        )
+        if event_type in ("open", "update", "resolve"):
+            entry[event_type] += int(count)
+        if outcome in ("retrying", "rejected"):
+            entry["failed"] += int(count)
+        if entry["last_event_at"] is None or last_at > entry["last_event_at"]:
+            entry["last_event_at"] = last_at
+    return stats
+
+
+def failure_counts(session: Session, *, since: datetime | None) -> dict[str, int]:
+    stmt = _delivery_window(
+        select(DeliveryLog.failure_reason, func.count())
+        .where(DeliveryLog.failure_reason.is_not(None))
+        .group_by(DeliveryLog.failure_reason),
+        since,
+    )
+    return {reason: int(n) for reason, n in session.execute(stmt)}
+
+
+def severity_totals(session: Session) -> dict[str, int]:
+    """Finding counts by severity across the whole stored union."""
+    stmt = select(NotificationFinding.severity, func.count()).group_by(
+        NotificationFinding.severity
+    )
+    return {severity: int(n) for severity, n in session.execute(stmt)}
+
+
+def findings_total(session: Session) -> int:
+    return int(
+        session.execute(select(func.count()).select_from(NotificationFinding))
+        .scalar_one()
+    )
+
+
+def issue_counts(session: Session) -> dict[str, dict[str, int]]:
+    """Per-team open/closed sub-issue counts. Pending rows count as neither."""
+    stmt = select(
+        NotificationIssue.team_key, NotificationIssue.status, func.count()
+    ).group_by(NotificationIssue.team_key, NotificationIssue.status)
+    counts: dict[str, dict[str, int]] = {}
+    for team_key, status, n in session.execute(stmt):
+        entry = counts.setdefault(team_key, {"open": 0, "closed": 0})
+        if status == STATUS_OPEN:
+            entry["open"] += int(n)
+        elif status == STATUS_RESOLVED:
+            entry["closed"] += int(n)
+    return counts
+
+
+def severity_mix(
+    session: Session, notification_uuids: Sequence[str]
+) -> dict[str, dict[str, int]]:
+    """Per-notification finding counts by severity, for the delivery drawer."""
+    if not notification_uuids:
+        return {}
+    stmt = (
+        select(
+            NotificationFinding.notification_uuid,
+            NotificationFinding.severity,
+            func.count(),
+        )
+        .where(NotificationFinding.notification_uuid.in_(notification_uuids))
+        .group_by(
+            NotificationFinding.notification_uuid, NotificationFinding.severity
+        )
+    )
+    mix: dict[str, dict[str, int]] = {}
+    for uuid, severity, n in session.execute(stmt):
+        mix.setdefault(uuid, {})[severity] = int(n)
+    return mix
+
+
+def event_times(
+    session: Session, *, since: datetime | None
+) -> list[tuple[datetime, str]]:
+    """(received_at, event_type) for every parsed delivery in the window."""
+    stmt = _delivery_window(
+        select(DeliveryLog.received_at, DeliveryLog.event_type).where(
+            DeliveryLog.event_type.is_not(None)
+        ),
+        since,
+    ).order_by(DeliveryLog.received_at)
+    return [(at, event) for at, event in session.execute(stmt)]
+
+
+def prune_delivery_log(session: Session, *, older_than: datetime) -> int:
+    """Delete rows older than the cutoff, returning how many were removed."""
+    result = session.execute(
+        delete(DeliveryLog).where(DeliveryLog.received_at < older_than)
+    )
+    session.flush()
+    return int(result.rowcount or 0)
 
 
 def count_unresolved_siblings(

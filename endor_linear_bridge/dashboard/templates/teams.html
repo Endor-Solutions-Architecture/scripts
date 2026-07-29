@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+
+{% block topbar_controls %}
+{% if ready %}
+<div class="pill status-pill"><span class="material-symbols-rounded">check_circle</span>/readyz passing</div>
+{% else %}
+<div class="pill status-pill danger"><span class="material-symbols-rounded">error</span>/readyz failing</div>
+{% endif %}
+{% endblock %}
+
+{% block content_class %} teams-grid{% endblock %}
+
+{% block content %}
+{% for card in cards %}
+<div class="team-card">
+  <div class="team-card-header">
+    <div class="icon-circle"><span class="material-symbols-rounded">groups</span></div>
+    <div>
+      <div class="team-key">{{ card.key }}</div>
+      <div class="team-sub">Linear team · {{ card.linear_team }}</div>
+    </div>
+    <div class="spacer"></div>
+    <div class="status-last">
+      <div class="eyebrow">Last event</div>
+      <strong style="font-size: 14px">{{ card.last_event }}</strong>
+    </div>
+  </div>
+  <div class="team-card-body">
+    <div class="team-meta">
+      <div><div class="label">Route</div><div class="value accent-text">{{ card.route }}</div></div>
+      <div><div class="label">HMAC secret</div><div class="value accent-text">{{ card.hmac }}</div></div>
+      <div><div class="label">Startup sync</div><div class="value">{% if card.synced %}{{ card.synced.strftime("%H:%M:%S UTC") }}{% else %}pending{% endif %}</div></div>
+      <div><div class="label">Failures · 24h</div><div class="value{% if card.failed %} danger-text{% endif %}">{{ card.failed }} failure{{ "" if card.failed == 1 else "s" }}</div></div>
+    </div>
+    <div class="team-section">
+      <div class="eyebrow">Workflow states resolved</div>
+      {% for state in card.states %}
+      <div class="state-row">
+        <span class="state-name">{{ state.name }}</span>
+        <span class="state-type">{{ state.role }}</span>
+        <span class="state-id">{{ state.id }}</span>
+      </div>
+      {% endfor %}
+    </div>
+    <div class="team-section">
+      <div class="eyebrow">Severity labels</div>
+      <div class="label-chips" style="margin-top: 8px">
+        {% for chip in card.severity_chips %}
+        <span class="label-chip"><span class="chip-dot {{ chip.css }}"></span>{{ chip.name }}</span>
+        {% else %}
+        <span class="label-chip">severity labels disabled</span>
+        {% endfor %}
+      </div>
+    </div>
+    <div class="team-volume">
+      {{ card.volume }}<br>
+      {{ card.issues }} · base labels: {{ card.labels }}
+    </div>
+  </div>
+</div>
+{% endfor %}
+<div class="grid-footnote">
+  State and label ids are resolved once at startup and cached. Renaming a state
+  or label in Linear requires a bridge restart to pick up.
+</div>
+{% endblock %}

@@ -178,10 +178,31 @@ For each Linear team — example team key `PLAT`:
 | `GET /healthz` | Liveness |
 | `GET /readyz` | Readiness — database reachable and Linear caches loaded |
 | `GET /metrics` | Prometheus exposition |
+| `GET /dashboard` | Mission Control — read-only operator dashboard (see below) |
 
-`/metrics` is **unauthenticated** and exposes every configured team key as a
-label value — restrict it at the ingress (internal network / scrape-only
-allowlist) rather than exposing it alongside `/hooks/{team_key}`.
+`/metrics` and `/dashboard` are **unauthenticated** — `/metrics` exposes every
+configured team key as a label value and `/dashboard` shows delivery history —
+so restrict both at the ingress (internal network / allowlist) rather than
+exposing them alongside `/hooks/{team_key}`.
+
+### Mission Control (`/dashboard`)
+
+A read-only operator dashboard served by the bridge itself — no build step, no
+extra deployment. Four views:
+
+| Path | View | Answers |
+|---|---|---|
+| `/dashboard` | Overview | Is the bridge healthy right now? |
+| `/dashboard/deliveries` | Deliveries | Did this notification make it to Linear, and if not, why? |
+| `/dashboard/teams` | Teams | Is each team wired up correctly? |
+| `/dashboard/config` | Configuration | What config is the running process actually using? |
+
+Every webhook — accepted or rejected — leaves a row in an append-only
+`delivery_log` table (pruned after 30 days) with a step-by-step trace that the
+Deliveries drawer replays: signature check, ledger, findings stored, Linear
+mutations, HTTP response. There are deliberately **no mutating controls**: to
+reprocess a delivery, re-run the scan in Endor or replay a captured payload.
+Secrets are never rendered.
 
 `events_received_total{team,event}` counts arrivals (incremented once the
 delivery is authenticated and its envelope parses, before Linear is called),

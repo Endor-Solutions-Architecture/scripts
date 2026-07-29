@@ -350,6 +350,14 @@ affected notifications in the Endor UI and scan again.
 
 ## Operations
 
+- **Mission Control:** open `http://localhost:8080/dashboard` (or your
+  ingress host) for a read-only operator dashboard — health verdict, a
+  searchable delivery log with per-delivery traces, per-team wiring, and the
+  effective configuration. Every webhook (accepted or rejected) is recorded,
+  so a failed delivery shows up here with the step it died on — usually
+  faster than grepping the JSON logs. It is **unauthenticated** like
+  `/metrics`: keep it off the public tunnel hostname if possible (the tunnel
+  only needs to expose `/hooks/*`), or restrict it at the ingress.
 - **One instance, one worker** — always (SQLite + in-process locking).
 - **Back up `/data/bridge.db`.** It is the only mapping from Endor
   notification UUID to Linear issue; losing it means duplicate tickets on the

@@ -23,7 +23,7 @@ from typing import Any, Sequence
 
 from sqlalchemy.orm import Session
 
-from endor_linear_bridge import render, store
+from endor_linear_bridge import render, store, trace
 from endor_linear_bridge.config import Config
 from endor_linear_bridge.envelope import Envelope
 from endor_linear_bridge.linear_cache import TeamRuntime
@@ -110,7 +110,13 @@ async def _handle_open_locked(
                     "duplicate open delivery ignored",
                     extra=_log_context(team_key, envelope),
                 )
+                trace.step(
+                    "Ledger check",
+                    "payload hash already processed — no Linear calls made",
+                    kind="noop",
+                )
                 return
+            trace.step("Ledger check", "new payload hash")
 
             existing = store.get_notification(session, notification.uuid)
 
@@ -146,6 +152,11 @@ async def _handle_open_locked(
                 store.upsert_findings(session, notification.uuid, envelope.findings)
             else:
                 store.replace_findings(session, notification.uuid, envelope.findings)
+            trace.step(
+                "Findings stored",
+                f"{len(envelope.findings)} in payload · issue renders from the stored union",
+                kind="findings_stored",
+            )
 
             # A2 durability point: the pending rows must survive a failure in
             # any Linear call below, so a retry can adopt the orphaned issue
@@ -178,6 +189,11 @@ async def _handle_open_locked(
                             team_key, envelope, linear_identifier=adopted["identifier"]
                         ),
                     )
+                    trace.step(
+                        "Sub-issue adopted",
+                        f"{adopted['identifier']} recovered via footer search",
+                        kind="issue_adopted",
+                    )
                     await deps.client.update_issue(
                         adopted["id"],
                         description=_description_for(deps, envelope, findings),
@@ -207,6 +223,11 @@ async def _handle_open_locked(
                             team_key, envelope, linear_identifier=issue["identifier"]
                         ),
                     )
+                    trace.step(
+                        "Sub-issue created",
+                        issue["identifier"],
+                        kind="issue_created",
+                    )
 
             store.record_event(session, notification.uuid, "open", body_hash)
             session.commit()
@@ -233,6 +254,11 @@ async def handle_update(
                 "duplicate update delivery ignored",
                 extra=_log_context(team_key, envelope),
             )
+            trace.step(
+                "Ledger check",
+                "payload hash already processed — no Linear calls made",
+                kind="noop",
+            )
             return
         row = store.get_notification(session, notification.uuid)
         is_known = row is not None and row.linear_issue_id is not None
@@ -244,6 +270,11 @@ async def handle_update(
         logger.warning(
             "update for unknown notification -- creating instead",
             extra=_log_context(team_key, envelope),
+        )
+        trace.step(
+            "Unknown notification",
+            "no Linear issue on record — creating via the open path",
+            kind="fallback_create",
         )
         await handle_open(deps, team_key, envelope, raw_body)
         # handle_open ledgers under "open"; also claim the "update" key so a
@@ -267,6 +298,11 @@ async def handle_update(
             if envelope.findings:
                 await deps.client.create_comment(
                     row.linear_issue_id, render.update_comment(envelope.findings)
+                )
+                trace.step(
+                    "Comment posted",
+                    f"{len(envelope.findings)} new findings on {row.linear_identifier}",
+                    kind="comment_created",
                 )
 
             store.record_event(session, notification.uuid, "update", body_hash)
@@ -293,6 +329,11 @@ async def handle_resolve(
                     "duplicate resolve delivery ignored",
                     extra=_log_context(team_key, envelope),
                 )
+                trace.step(
+                    "Ledger check",
+                    "payload hash already processed — no Linear calls made",
+                    kind="noop",
+                )
                 return
 
             row = store.get_notification(session, notification.uuid)
@@ -303,6 +344,11 @@ async def handle_resolve(
                 logger.warning(
                     "resolve for unknown or already-resolved notification",
                     extra=_log_context(team_key, envelope),
+                )
+                trace.step(
+                    "Nothing to close",
+                    "notification unknown or already resolved",
+                    kind="resolve_skipped",
                 )
                 store.record_event(session, notification.uuid, "resolve", body_hash)
                 session.commit()
@@ -322,6 +368,11 @@ async def handle_resolve(
                 extra=_log_context(
                     team_key, envelope, linear_identifier=row.linear_identifier
                 ),
+            )
+            trace.step(
+                "Sub-issue closed",
+                row.linear_identifier or "",
+                kind="issue_closed",
             )
 
             remaining = store.count_unresolved_siblings(
@@ -346,6 +397,11 @@ async def handle_resolve(
                             envelope,
                             linear_identifier=parent.linear_identifier,
                         ),
+                    )
+                    trace.step(
+                        "Parent closed",
+                        f"{parent.linear_identifier} — no unresolved children remain",
+                        kind="parent_closed",
                     )
 
             store.record_event(session, notification.uuid, "resolve", body_hash)
@@ -457,6 +513,11 @@ async def _ensure_parent_issue(
                         team_key, envelope, linear_identifier=adopted["identifier"]
                     ),
                 )
+                trace.step(
+                    "Parent adopted",
+                    f"{adopted['identifier']} recovered via footer search",
+                    kind="parent_adopted",
+                )
                 return parent
 
             issue = await deps.client.create_issue(
@@ -487,6 +548,11 @@ async def _ensure_parent_issue(
                     team_key, envelope, linear_identifier=issue["identifier"]
                 ),
             )
+            trace.step(
+                "Parent created",
+                issue["identifier"],
+                kind="parent_created",
+            )
         # A PENDING parent with linear_issue_id already set cannot occur --
         # attach_linear_issue() always sets status OPEN alongside the id, so
         # there is no state transition that leaves the two disagreeing.
@@ -506,6 +572,11 @@ async def _ensure_parent_issue(
             extra=_log_context(
                 team_key, envelope, linear_identifier=parent.linear_identifier
             ),
+        )
+        trace.step(
+            "Parent reopened",
+            parent.linear_identifier or "",
+            kind="parent_reopened",
         )
 
     return parent
@@ -577,6 +648,11 @@ async def _apply_current_state(
         store.replace_findings(session, notification.uuid, envelope.findings)
     else:
         store.upsert_findings(session, notification.uuid, envelope.findings)
+    trace.step(
+        "Findings stored",
+        f"{len(envelope.findings)} in payload · issue renders from the stored union",
+        kind="findings_stored",
+    )
 
     findings = store.all_findings(session, notification.uuid)
     severity = max_severity([f.severity for f in findings])
@@ -587,6 +663,11 @@ async def _apply_current_state(
             row.linear_issue_id, state_id=runtime.reopen_state_id
         )
         await deps.client.create_comment(row.linear_issue_id, render.reopen_comment())
+        trace.step(
+            "Sub-issue reopened",
+            row.linear_identifier or "",
+            kind="issue_reopened",
+        )
         await ensure_parent(deps, session, runtime, envelope)
 
     await deps.client.update_issue(
@@ -594,4 +675,9 @@ async def _apply_current_state(
         description=_description_for(deps, envelope, findings),
         priority=runtime.priority_for_severity(severity),
         label_ids=runtime.label_ids_for(severity),
+    )
+    trace.step(
+        "Sub-issue updated",
+        f"{row.linear_identifier} — description, priority, labels refreshed",
+        kind="issue_updated",
     )

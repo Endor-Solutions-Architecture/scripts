@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from sqlalchemy import (
+    JSON,
     DateTime,
     Engine,
     ForeignKey,
@@ -95,6 +96,40 @@ class ProcessedEvent(Base):
     event: Mapped[str] = mapped_column(String(16), primary_key=True)
     payload_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
     processed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class DeliveryLog(Base):
+    """One row per webhook the bridge accepted or rejected.
+
+    Written after the handler resolves, including for rejections -- a
+    delivery rejected before parse has no notification UUID or target, only
+    the team from the route, the outcome, and the failure reason. This table
+    exists solely for the /dashboard Deliveries view; nothing in the webhook
+    pipeline reads it back.
+    """
+
+    __tablename__ = "delivery_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, index=True
+    )
+    team: Mapped[str] = mapped_column(String(128), nullable=False)
+    event_type: Mapped[str | None] = mapped_column(String(16))
+    notification_uuid: Mapped[str | None] = mapped_column(String(128))
+    target: Mapped[str | None] = mapped_column(String(512))
+    project: Mapped[str | None] = mapped_column(String(512))
+    branch: Mapped[str | None] = mapped_column(String(255))
+    findings_new: Mapped[int | None] = mapped_column(Integer)
+    findings_total: Mapped[int | None] = mapped_column(Integer)
+    linear_identifier: Mapped[str | None] = mapped_column(String(64))
+    linear_action: Mapped[str | None] = mapped_column(String(16))
+    parent_identifier: Mapped[str | None] = mapped_column(String(64))
+    outcome: Mapped[str] = mapped_column(String(16), nullable=False)
+    status_code: Mapped[int] = mapped_column(Integer, nullable=False)
+    failure_reason: Mapped[str | None] = mapped_column(String(64))
+    latency_ms: Mapped[int | None] = mapped_column(Integer)
+    trace: Mapped[list | None] = mapped_column(JSON)
 
 
 def build_engine(database_url: str) -> Engine:

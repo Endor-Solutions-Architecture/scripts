@@ -10,16 +10,20 @@ unexpected exceptions -- returns 503 so Endor retries at 1h/2h/4h.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 
 from fastapi import FastAPI, Request, Response
+from fastapi.staticfiles import StaticFiles
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
-from endor_linear_bridge import metrics
+from endor_linear_bridge import dashboard, metrics, store, trace
 from endor_linear_bridge.auth import SIGNATURE_HEADER, verify_bearer, verify_hmac
 from endor_linear_bridge.config import Config, load_config
 from endor_linear_bridge.envelope import Envelope, EnvelopeError, parse_envelope
@@ -27,9 +31,11 @@ from endor_linear_bridge.handlers import HandlerDeps, TransientFailure, handle_e
 from endor_linear_bridge.linear_cache import StartupError, build_team_runtimes
 from endor_linear_bridge.linear_client import LinearClient
 from endor_linear_bridge.models import (
+    ProjectParent,
     build_engine,
     build_session_factory,
     create_all,
+    utcnow,
 )
 
 logger = logging.getLogger(__name__)
@@ -81,11 +87,98 @@ def configure_logging(level: str = "INFO") -> None:
     _LOGGING_CONFIGURED = True
 
 
+DELIVERY_LOG_RETENTION = timedelta(days=30)
+DELIVERY_LOG_PRUNE_INTERVAL_SECONDS = 24 * 60 * 60
+
+
 @dataclass
 class AppState:
     config: Config
     deps: HandlerDeps | None = None
     ready: bool = False
+    started_at: datetime | None = None
+    synced_at: datetime | None = None
+
+
+def _derive_linear_action() -> str:
+    """Summarize the trace's Linear mutations into the delivery_log column."""
+    if trace.has_kind("issue_created"):
+        return "created"
+    if trace.has_kind("issue_closed"):
+        return "closed"
+    if any(
+        trace.has_kind(kind)
+        for kind in ("issue_adopted", "issue_updated", "issue_reopened", "comment_created")
+    ):
+        return "updated"
+    return "none"
+
+
+def record_delivery_row(
+    state: AppState,
+    team_key: str,
+    envelope: Envelope | None,
+    status_code: int,
+    failure_reason: str | None,
+    started: float,
+) -> None:
+    """Best-effort append to the delivery log. Runs after the handler resolved,
+    so a failure here must never turn a processed webhook into an error."""
+    if state.deps is None:
+        return
+
+    latency_ms = int((time.monotonic() - started) * 1000)
+    trace.step(
+        "HTTP response",
+        f"{status_code} · {latency_ms} ms",
+        ok=status_code < 400,
+    )
+
+    if status_code >= 500:
+        outcome = "retrying"
+    elif status_code >= 400:
+        outcome = "rejected"
+    elif trace.has_kind("noop"):
+        outcome = "noop"
+    else:
+        outcome = "ok"
+
+    fields: dict[str, object] = {
+        "team": team_key,
+        "outcome": outcome,
+        "status_code": status_code,
+        "failure_reason": failure_reason,
+        "latency_ms": latency_ms,
+        "linear_action": "none",
+        "trace": trace.steps(),
+    }
+
+    try:
+        with state.deps.session_factory() as session:
+            if envelope is not None:
+                notification = envelope.notification
+                fields.update(
+                    event_type=envelope.event,
+                    notification_uuid=notification.uuid,
+                    target=notification.aggregation.target_name,
+                    project=notification.project_name,
+                    branch=notification.ref_name,
+                    findings_new=len(envelope.findings),
+                    linear_action=_derive_linear_action(),
+                )
+                row = store.get_notification(session, notification.uuid)
+                if row is not None:
+                    fields["linear_identifier"] = row.linear_identifier
+                    fields["findings_total"] = len(
+                        store.all_findings(session, notification.uuid)
+                    )
+                    parent = session.get(ProjectParent, row.parent_id)
+                    if parent is not None:
+                        fields["parent_identifier"] = parent.linear_identifier
+            store.record_delivery(session, **fields)
+            session.commit()
+    except Exception:  # noqa: BLE001 -- observability must not fail the webhook
+        logger.exception("failed to write delivery log row")
 
 
 def metrics_response() -> Response:
@@ -113,10 +206,33 @@ def readiness_status(state: AppState) -> int:
 
 def create_app(config: Config, deps: HandlerDeps | None = None) -> FastAPI:
     """Build the app. Passing `deps` skips startup sync -- used by tests."""
-    state = AppState(config=config, deps=deps, ready=deps is not None)
+    now = utcnow()
+    state = AppState(
+        config=config,
+        deps=deps,
+        ready=deps is not None,
+        started_at=now,
+        synced_at=now if deps is not None else None,
+    )
+
+    async def prune_delivery_log_forever() -> None:
+        """Keep the append-only delivery log bounded (spec addendum, section 17)."""
+        while True:
+            try:
+                with state.deps.session_factory() as session:
+                    removed = store.prune_delivery_log(
+                        session, older_than=utcnow() - DELIVERY_LOG_RETENTION
+                    )
+                    session.commit()
+                if removed:
+                    logger.info("pruned %d delivery log rows", removed)
+            except Exception:  # noqa: BLE001 -- pruning must never kill the app
+                logger.exception("delivery log prune failed")
+            await asyncio.sleep(DELIVERY_LOG_PRUNE_INTERVAL_SECONDS)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        prune_task: asyncio.Task | None = None
         if state.deps is None:
             engine = build_engine(config.database_url)
             create_all(engine)
@@ -137,15 +253,28 @@ def create_app(config: Config, deps: HandlerDeps | None = None) -> FastAPI:
                 config=config,
             )
             state.ready = True
+            state.synced_at = utcnow()
             logger.info(
                 "startup complete for teams: %s", ", ".join(sorted(runtimes))
             )
+            prune_task = asyncio.create_task(prune_delivery_log_forever())
         yield
+        if prune_task is not None:
+            prune_task.cancel()
         if state.deps is not None and isinstance(state.deps.client, LinearClient):
             await state.deps.client.aclose()
 
     app = FastAPI(title="Endor Linear Bridge", lifespan=lifespan)
     app.state.bridge = state
+
+    # Mission Control: read-only dashboard, no auth by deployment decision --
+    # restrict at the ingress like /metrics. See dashboard/__init__.py.
+    app.include_router(dashboard.build_router(state))
+    app.mount(
+        "/dashboard/static",
+        StaticFiles(directory=str(dashboard.STATIC_DIR)),
+        name="dashboard-static",
+    )
 
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:
@@ -169,6 +298,23 @@ def create_app(config: Config, deps: HandlerDeps | None = None) -> FastAPI:
 
     @app.post("/hooks/{team_key}")
     async def receive(team_key: str, request: Request, response: Response):
+        started = time.monotonic()
+        trace.begin()
+        status, body, failure_reason, envelope = await process_webhook(
+            team_key, request
+        )
+        response.status_code = status
+        record_delivery_row(state, team_key, envelope, status, failure_reason, started)
+        return body
+
+    async def process_webhook(
+        team_key: str, request: Request
+    ) -> tuple[int, dict[str, str], str | None, Envelope | None]:
+        """The webhook pipeline, returning (status, body, failure_reason, envelope).
+
+        Split from the route function so every exit -- rejections included --
+        flows back through one delivery-log write.
+        """
         # 1. Unknown team -> 404. Checked first: an unknown team has no secret,
         # and this branch needs no request body.
         team = state.config.teams.get(team_key)
@@ -179,15 +325,16 @@ def create_app(config: Config, deps: HandlerDeps | None = None) -> FastAPI:
             # retains one child metric per label tuple forever, and anyone who
             # can reach this public endpoint could grow it without bound by
             # POSTing to a stream of random paths. The real value still goes
-            # in the log line, which is bounded by rotation.
+            # in the log line, which is bounded by rotation, and in the
+            # delivery log, which is bounded by pruning.
             logger.warning(
                 "webhook for unknown team key %s",
                 team_key,
                 extra={"team_key": team_key},
             )
             metrics.EVENTS_FAILED.labels("unknown", "unknown", "unknown_team").inc()
-            response.status_code = 404
-            return {"status": "unknown team"}
+            trace.step("Team lookup", f"no team '{team_key}' configured", ok=False)
+            return 404, {"status": "unknown team"}, "unknown_team", None
 
         # Everything from here down -- including the body read itself, which
         # can raise starlette.requests.ClientDisconnect if the client drops
@@ -209,8 +356,10 @@ def create_app(config: Config, deps: HandlerDeps | None = None) -> FastAPI:
                     extra={"team_key": team_key},
                 )
                 metrics.EVENTS_FAILED.labels(team_key, "unknown", "bad_bearer").inc()
-                response.status_code = 401
-                return {"status": "unauthorized"}
+                trace.step(
+                    "Bearer token", "rejected before parse", ok=False
+                )
+                return 401, {"status": "unauthorized"}, "bad_bearer", None
 
             # 3. HMAC over the raw bytes, before parsing -> 401.
             if not verify_hmac(
@@ -222,8 +371,16 @@ def create_app(config: Config, deps: HandlerDeps | None = None) -> FastAPI:
                     extra={"team_key": team_key},
                 )
                 metrics.EVENTS_FAILED.labels(team_key, "unknown", "bad_hmac").inc()
-                response.status_code = 401
-                return {"status": "unauthorized"}
+                trace.step(
+                    "Signature check",
+                    "HMAC mismatch — rejected before parse",
+                    ok=False,
+                )
+                return 401, {"status": "unauthorized"}, "bad_hmac", None
+
+            trace.step(
+                "Signature verified", "bearer token and HMAC over raw bytes"
+            )
 
             # 4. Envelope validation -> 400.
             try:
@@ -236,8 +393,13 @@ def create_app(config: Config, deps: HandlerDeps | None = None) -> FastAPI:
                     extra={"team_key": team_key},
                 )
                 metrics.EVENTS_FAILED.labels(team_key, "unknown", "bad_payload").inc()
-                response.status_code = 400
-                return {"status": "invalid payload"}
+                trace.step("Envelope parse", str(exc), ok=False)
+                return 400, {"status": "invalid payload"}, "bad_payload", None
+
+            trace.step(
+                "Envelope parsed",
+                f"{envelope.event} · {envelope.notification.aggregation.target_name}",
+            )
 
             # This is the earliest point at which both metric labels (team,
             # event) are known for a well-formed, authenticated delivery, so
@@ -255,8 +417,7 @@ def create_app(config: Config, deps: HandlerDeps | None = None) -> FastAPI:
                 metrics.EVENTS_FAILED.labels(
                     team_key, envelope.event, "not_ready"
                 ).inc()
-                response.status_code = 503
-                return {"status": "not ready"}
+                return 503, {"status": "not ready"}, "not_ready", envelope
 
             # 5. Process. TransientFailure gets its own reason and log
             # message; anything else -- including an error from Linear that
@@ -278,8 +439,8 @@ def create_app(config: Config, deps: HandlerDeps | None = None) -> FastAPI:
                 metrics.EVENTS_FAILED.labels(
                     team_key, envelope.event, "transient"
                 ).inc()
-                response.status_code = 503
-                return {"status": "retry later"}
+                trace.step("Linear call failed", str(exc), ok=False, kind="linear_error")
+                return 503, {"status": "retry later"}, "transient", envelope
         except Exception:  # noqa: BLE001 -- a 500 would make Endor stop retrying
             extra = {"team_key": team_key}
             if envelope is not None:
@@ -295,10 +456,10 @@ def create_app(config: Config, deps: HandlerDeps | None = None) -> FastAPI:
                 envelope.event if envelope is not None else "unknown",
                 "unexpected",
             ).inc()
-            response.status_code = 503
-            return {"status": "retry later"}
+            trace.step("Unexpected error", "see the service log", ok=False)
+            return 503, {"status": "retry later"}, "unexpected", envelope
 
-        return {"status": "ok"}
+        return 200, {"status": "ok"}, None, envelope
 
     return app
 
