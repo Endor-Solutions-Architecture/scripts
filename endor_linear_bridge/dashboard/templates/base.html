@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title }} · Linear Bridge</title>
+  <link href="https://api.fontshare.com/v2/css?f[]=switzer@400,500,600,700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,300,0,0" rel="stylesheet">
+  <link rel="stylesheet" href="/dashboard/static/dashboard.css">
+</head>
+<body>
+<div class="shell{% block shell_class %}{% endblock %}">
+  <aside class="sidebar">
+    <div class="brand">
+      <img src="/dashboard/static/endor-mark.svg" alt="Endor Labs" width="24">
+      <span>Linear <em>Bridge</em></span>
+    </div>
+    <nav>
+      <div class="nav-section">Operate</div>
+      <a class="nav-item{% if sidebar.active == 'overview' %} active{% endif %}" href="/dashboard">
+        <span class="material-symbols-rounded">monitoring</span>Overview</a>
+      <a class="nav-item{% if sidebar.active == 'deliveries' %} active{% endif %}" href="/dashboard/deliveries">
+        <span class="material-symbols-rounded">swap_horiz</span>Deliveries</a>
+      <div class="nav-section">Inspect</div>
+      <a class="nav-item{% if sidebar.active == 'teams' %} active{% endif %}" href="/dashboard/teams">
+        <span class="material-symbols-rounded">groups</span>Teams</a>
+      <a class="nav-item{% if sidebar.active == 'config' %} active{% endif %}" href="/dashboard/config">
+        <span class="material-symbols-rounded">settings</span>Configuration</a>
+    </nav>
+    <footer class="sidebar-footer">
+      <div class="ready-badge">
+        <span class="dot {% if sidebar.ready %}ok pulse{% else %}danger{% endif %}"></span>
+        {{ "READY" if sidebar.ready else "NOT READY" }}
+      </div>
+      <div class="sidebar-meta">
+        bridge v{{ sidebar.version }} · {{ sidebar.uptime }}<br>
+        {{ sidebar.store_line }}<br>
+        {% if sidebar.synced_at %}startup sync {{ sidebar.synced_at.strftime("%H:%M UTC") }}{% else %}startup sync pending{% endif %}
+      </div>
+    </footer>
+  </aside>
+  <div class="main">
+    <header class="topbar">
+      <div>
+        <h1>{{ title }}</h1>
+        <div class="subtitle">{{ subtitle }}</div>
+      </div>
+      <div class="spacer"></div>
+      {% block topbar_controls %}{% endblock %}
+    </header>
+    <div class="content{% block content_class %}{% endblock %}">
+      {% block content %}{% endblock %}
+    </div>
+  </div>
+  {% block third_column %}{% endblock %}
+</div>
+{% block scripts %}{% endblock %}
+</body>
+</html>

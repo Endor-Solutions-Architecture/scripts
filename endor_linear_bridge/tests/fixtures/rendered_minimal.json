@@ -1,0 +1,24 @@
+{
+  "event": "open",
+  "notification": {
+    "uuid": "0192f3c4d5e6f7a8b9c0d1e2f3a4b5c6",
+    "project_uuid": "aabbccddeeff00112233445566778899",
+    "project_name": "webapp",
+    "project_app_url": "",
+    "ref_name": "",
+    "context_id": "",
+    "policy_uuid": "",
+    "policy_name": "",
+    "policy_app_url": "",
+    "aggregation": {}
+  },
+  "diff": {},
+  "findings": [
+    {
+      "uuid": "aaaa1111",
+      "description": "Secret detected in source: AWS access key",
+      "severity": "FINDING_LEVEL_CRITICAL",
+      "finding_url": "https://app.endorlabs.com/t/acme/findings/aaaa1111"
+    }
+  ]
+}

@@ -1,0 +1,41 @@
+{
+  "event": "open",
+  "notification": {
+    "uuid": "0192f3c4d5e6f7a8b9c0d1e2f3a4b5c6",
+    "project_uuid": "aabbccddeeff00112233445566778899",
+    "project_name": "webapp",
+    "project_app_url": "https://app.endorlabs.com/t/acme/projects/aabbccddeeff00112233445566778899",
+    "ref_name": "main",
+    "context_id": "main",
+    "policy_uuid": "1122334455667788990011223344556677",
+    "policy_name": "Critical and high vulnerabilities",
+    "policy_app_url": "https://app.endorlabs.com/t/acme/policies/1122334455667788990011223344556677",
+    "aggregation": {
+      "type": "AGGREGATION_TYPE_DEPENDENCY_ACROSS_PKG_VERSIONS",
+      "target_name": "npm://lodash",
+      "pkg_version_uuid": ""
+    }
+  },
+  "diff": {
+    "new_finding_uuids": ["f1a2b3c4", "d5e6f7a8"],
+    "resolved_finding_uuids": []
+  },
+  "findings": [
+    {
+      "uuid": "d5e6f7a8",
+      "description": "lodash command injection in template",
+      "severity": "FINDING_LEVEL_HIGH",
+      "dependency": "lodash@4.17.4",
+      "package": "webapp@1.5.0",
+      "finding_url": "https://app.endorlabs.com/t/acme/findings/d5e6f7a8"
+    },
+    {
+      "uuid": "f1a2b3c4",
+      "description": "lodash is vulnerable to prototype pollution via zipObjectDeep",
+      "severity": "FINDING_LEVEL_CRITICAL",
+      "dependency": "lodash@4.17.4",
+      "package": "webapp@1.5.0",
+      "finding_url": "https://app.endorlabs.com/t/acme/findings/f1a2b3c4"
+    }
+  ]
+}

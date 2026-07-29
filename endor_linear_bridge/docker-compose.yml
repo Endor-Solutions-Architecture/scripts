@@ -1,0 +1,24 @@
+# Local example. TLS is terminated in front of the service in production;
+# for local testing against real Endor see the README's mkcert instructions.
+services:
+  bridge:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      LINEAR_API_KEY: ${LINEAR_API_KEY:?set LINEAR_API_KEY}
+      BRIDGE_BEARER_TOKEN: ${BRIDGE_BEARER_TOKEN:?set BRIDGE_BEARER_TOKEN}
+      ENDOR_HMAC_PLAT: ${ENDOR_HMAC_PLAT:?set ENDOR_HMAC_PLAT}
+      BRIDGE_CONFIG: /app/config.yaml
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - bridge-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  bridge-data:

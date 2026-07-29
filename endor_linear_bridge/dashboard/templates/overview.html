@@ -1,0 +1,175 @@
+{% extends "base.html" %}
+
+{% block topbar_controls %}
+<form class="pill search-pill" action="/dashboard/deliveries" method="get">
+  <span class="material-symbols-rounded">search</span>
+  <input type="search" name="q" placeholder="Notification UUID, dependency, or PLAT-142">
+</form>
+<details class="window-pill">
+  <summary><span class="material-symbols-rounded">schedule</span>{{ window_label }}</summary>
+  <div class="menu">
+    <a href="/dashboard?window=24h">Last 24h</a>
+    <a href="/dashboard?window=7d">Last 7 days</a>
+    <a href="/dashboard?window=30d">Last 30 days</a>
+  </div>
+</details>
+{% endblock %}
+
+{% block content %}
+<section class="status-bar {{ verdict_css }}">
+  <div class="status-dot{% if verdict_css == 'ok' %} pulse{% endif %}"></div>
+  <div class="status-verdict">
+    <div class="eyebrow">Bridge status</div>
+    <h2>{{ verdict }}</h2>
+  </div>
+  <div class="status-divider"></div>
+  <p class="status-read">{{ sentence }}</p>
+  <div class="spacer"></div>
+  <div class="status-last">
+    <div class="eyebrow">Last delivery</div>
+    <strong>{{ last_delivery }}</strong>
+  </div>
+</section>
+
+<section class="stat-row">
+  <div class="stat-card">
+    <div class="icon-circle"><span class="material-symbols-rounded">swap_horiz</span></div>
+    <div class="stat-label">Events</div>
+    <div class="stat-value">{{ events_total }}</div>
+    <div class="stat-meta">{{ event_totals['open'] }} open · {{ event_totals['update'] }} update · {{ event_totals['resolve'] }} resolve</div>
+  </div>
+  <div class="stat-card">
+    <div class="icon-circle"><span class="material-symbols-rounded">bug_report</span></div>
+    <div class="stat-label">Findings ingested</div>
+    <div class="stat-value">{{ "{:,}".format(findings_total) }}</div>
+    <div class="stat-meta">the stored union — drives priority</div>
+  </div>
+  <div class="stat-card">
+    <div class="icon-circle"><span class="material-symbols-rounded">workspaces</span></div>
+    <div class="stat-label">Linear issues open</div>
+    <div class="stat-value">{{ issues_open }}</div>
+    <div class="stat-meta">{{ issues_closed }} closed to date</div>
+  </div>
+  <div class="stat-card{% if failures %} danger{% endif %}">
+    <div class="icon-circle"><span class="material-symbols-rounded">priority_high</span></div>
+    <div class="stat-label">Failures</div>
+    <div class="stat-value">{{ failures }}</div>
+    <div class="stat-meta">{{ retrying }} retrying · {{ rejected }} rejected</div>
+  </div>
+  <div class="stat-card">
+    <div class="icon-circle"><span class="material-symbols-rounded">bolt</span></div>
+    <div class="stat-label">Linear p95</div>
+    <div class="stat-value">{{ p95 }}</div>
+    <div class="stat-meta">{% if rate_remaining is not none %}{{ rate_remaining }} rate limit left{% else %}no Linear call yet{% endif %}</div>
+  </div>
+</section>
+
+<section class="grid-2">
+  <div class="panel">
+    <div class="panel-header">
+      <div class="panel-title">Events received</div>
+      <div class="spacer"></div>
+      <div class="chart-legend">
+        <span class="legend-item"><span class="swatch open"></span>open</span>
+        <span class="legend-item"><span class="swatch update"></span>update</span>
+        <span class="legend-item"><span class="swatch resolve"></span>resolve</span>
+      </div>
+    </div>
+    <div class="panel-body">
+      <div class="chart">
+        {% for bucket in buckets %}
+        <div class="chart-col">
+          {% if bucket['open'] %}<div class="chart-seg open" style="height: {{ bucket['open_pct'] }}%"></div>{% endif %}
+          {% if bucket['update'] %}<div class="chart-seg update" style="height: {{ bucket['update_pct'] }}%"></div>{% endif %}
+          {% if bucket['resolve'] %}<div class="chart-seg resolve" style="height: {{ bucket['resolve_pct'] }}%"></div>{% endif %}
+        </div>
+        {% endfor %}
+      </div>
+      <div class="chart-axis"><span>start of window</span><span>·</span><span>·</span><span>·</span><span>now</span></div>
+    </div>
+  </div>
+  <div class="panel">
+    <div class="panel-header">
+      <div>
+        <div class="panel-title">Findings ingested</div>
+        <div class="panel-sub">{{ "{:,}".format(findings_total) }} rows in the union · issue priority comes from the max</div>
+      </div>
+    </div>
+    <div class="panel-body">
+      {% for row in severity_bars %}
+      <div class="severity-row">
+        <span class="severity-label {{ row.css }}">{{ row.label }}</span>
+        <div class="severity-track"><div class="severity-fill {{ row.css }}" style="width: {{ row.pct }}%"></div></div>
+        <span class="severity-count">{{ row.count }}</span>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</section>
+
+<section class="grid-2">
+  <div class="panel">
+    <div class="panel-header"><div class="panel-title">By team</div></div>
+    <div class="table">
+      <div class="table-header cols-teams">
+        <span>Team</span><span>Open</span><span>Update</span><span>Resolve</span><span>Failed</span><span>Linear issues</span><span>Last event</span>
+      </div>
+      {% for team in teams %}
+      <div class="table-row cols-teams">
+        <span class="cell-team-key">{{ team.key }}</span>
+        <span class="cell-count">{{ team['open'] }}</span>
+        <span class="cell-count">{{ team['update'] }}</span>
+        <span class="cell-count">{{ team['resolve'] }}</span>
+        <span class="cell-failed{% if team.failed %} nonzero{% endif %}">{{ team.failed }}</span>
+        <span class="cell-count">{{ team.issues }}</span>
+        <span class="cell-time">{{ team.last_event }}</span>
+      </div>
+      {% endfor %}
+    </div>
+    <div class="footnote">Teams synced at startup — workflow states and severity labels resolved.</div>
+  </div>
+  <div class="panel{% if failures %} danger{% endif %}">
+    <div class="panel-header">
+      <span class="material-symbols-rounded {% if failures %}danger-text{% else %}muted-text{% endif %}">priority_high</span>
+      <div class="panel-title">Failures · {{ window_label|lower }}</div>
+    </div>
+    {% for row in failure_rows %}
+    <div class="failure-row">
+      <span class="failure-count {{ row.css }}-text">{{ row.count }}</span>
+      <div>
+        <div class="failure-reason">{{ row.reason }}</div>
+        <div class="failure-detail">{{ row.detail }}</div>
+      </div>
+      <span class="failure-status {{ row.css }}-text">{{ row.status }}</span>
+    </div>
+    {% endfor %}
+    <div class="footnote">A 5xx keeps Endor retrying at 1h / 2h / 4h. A 401 does not — fix the secret and re-scan.</div>
+  </div>
+</section>
+
+<section class="panel">
+  <div class="panel-header">
+    <div class="panel-title">Recent deliveries</div>
+    <div class="spacer"></div>
+    <a class="panel-link" href="/dashboard/deliveries">Open the full log →</a>
+  </div>
+  <div class="table">
+    <div class="table-header cols-recent">
+      <span>Time</span><span>Event</span><span>Team</span><span>Target</span><span>Findings</span><span>Linear</span><span>Result</span>
+    </div>
+    {% for row in recent %}
+    <div class="table-row cols-recent">
+      <span class="cell-time">{{ row.time }}</span>
+      <span class="event-badge {{ row.event }}">{{ row.event }}</span>
+      <span class="cell-team">{{ row.team }}</span>
+      <span class="cell-target">{{ row.target }}<small>{{ row.project_branch }}</small></span>
+      <span class="cell-findings">{{ row.findings }}</span>
+      <span class="cell-linear{% if not row.has_linear %} none{% endif %}">{{ row.linear }}</span>
+      <span class="result {{ 'ok' if row.result_ok else 'bad' }}"><span class="dot {{ 'ok' if row.result_ok else 'danger' }}"></span>{{ row.result }}</span>
+    </div>
+    {% else %}
+    <div class="table-row"><span class="cell-findings">No deliveries yet — point an Endor webhook at /hooks/&lt;team&gt; and run a scan.</span></div>
+    {% endfor %}
+  </div>
+</section>
+{% endblock %}

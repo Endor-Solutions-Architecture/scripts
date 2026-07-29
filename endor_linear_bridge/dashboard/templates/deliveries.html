@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+
+{% block shell_class %} has-drawer{% endblock %}
+
+{% block topbar_controls %}
+<form class="pill search-pill" action="/dashboard/deliveries" method="get">
+  <span class="material-symbols-rounded">search</span>
+  <input type="search" name="q" value="{{ q }}" placeholder="Notification UUID, dependency, or PLAT-142">
+  <input type="hidden" name="filter" value="{{ filter }}">
+  <input type="hidden" name="window" value="{{ window }}">
+</form>
+<details class="window-pill">
+  <summary><span class="material-symbols-rounded">schedule</span>{{ window_label }}</summary>
+  <div class="menu">
+    <a href="/dashboard/deliveries?window=24h&filter={{ filter }}&q={{ q }}">Last 24h</a>
+    <a href="/dashboard/deliveries?window=7d&filter={{ filter }}&q={{ q }}">Last 7 days</a>
+    <a href="/dashboard/deliveries?window=30d&filter={{ filter }}&q={{ q }}">Last 30 days</a>
+  </div>
+</details>
+{% endblock %}
+
+{% block content %}
+<section class="summary-strip">
+  <div class="summary-card"><div class="eyebrow">Received</div><div class="summary-value">{{ summary.received }}</div></div>
+  <div class="summary-card"><div class="eyebrow">Delivered to Linear</div><div class="summary-value accent-text">{{ summary.ok }}</div></div>
+  <div class="summary-card"><div class="eyebrow">Mid-retry</div><div class="summary-value warning-text">{{ summary.retrying }}</div></div>
+  <div class="summary-card"><div class="eyebrow">Rejected</div><div class="summary-value danger-text">{{ summary.rejected }}</div></div>
+  <div class="summary-card"><div class="eyebrow">No-op redeliveries</div><div class="summary-value secondary-text">{{ summary.noop }}</div></div>
+</section>
+
+<section class="panel">
+  <div class="panel-header">
+    <div>
+      <div class="panel-title lg">Delivery log</div>
+      <div class="panel-sub">{{ rows|length }} events · newest first</div>
+    </div>
+    <div class="spacer"></div>
+    <div class="chips">
+      <a class="chip{% if filter == 'all' %} active{% endif %}" href="/dashboard/deliveries?window={{ window }}&q={{ q }}">All events</a>
+      <a class="chip{% if filter == 'open' %} active{% endif %}" href="/dashboard/deliveries?window={{ window }}&filter=open&q={{ q }}">open</a>
+      <a class="chip{% if filter == 'update' %} active{% endif %}" href="/dashboard/deliveries?window={{ window }}&filter=update&q={{ q }}">update</a>
+      <a class="chip{% if filter == 'resolve' %} active{% endif %}" href="/dashboard/deliveries?window={{ window }}&filter=resolve&q={{ q }}">resolve</a>
+      <a class="chip failed{% if filter == 'failed' %} active{% endif %}" href="/dashboard/deliveries?window={{ window }}&filter=failed&q={{ q }}">failed only</a>
+    </div>
+  </div>
+  <div class="table" id="delivery-table">
+    <div class="table-header cols-log">
+      <span>Time</span><span>Event</span><span>Team</span><span>Target</span><span>Findings</span><span>Linear</span><span>Latency</span><span>Result</span>
+    </div>
+    {% for row in rows %}
+    <div class="table-row cols-log clickable{% if loop.first %} selected{% endif %}" data-delivery-id="{{ row.id }}">
+      <span class="cell-time">{{ row.time }}</span>
+      <span class="event-badge {{ row.event }}">{{ row.event }}</span>
+      <span class="cell-team">{{ row.team }}</span>
+      <span class="cell-target">{{ row.target }}<small>{{ row.project_branch }}</small></span>
+      <span class="cell-findings">{{ row.findings }}</span>
+      <span class="cell-linear{% if not row.has_linear %} none{% endif %}">{{ row.linear }}</span>
+      <span class="cell-latency">{{ row.latency }}</span>
+      <span class="result {{ 'ok' if row.result_ok else 'bad' }}"><span class="dot {{ 'ok' if row.result_ok else 'danger' }}"></span>{{ row.result }}</span>
+    </div>
+    {% else %}
+    <div class="table-row"><span class="cell-findings">No deliveries in this window.</span></div>
+    {% endfor %}
+  </div>
+  <div class="footnote">A no-op means the payload hash was already in the ledger — Endor redelivered, the bridge made zero Linear calls.</div>
+</section>
+{% endblock %}
+
+{% block third_column %}
+<aside class="drawer">
+  <div class="drawer-header">
+    <div class="eyebrow">Delivery trace</div>
+    <div class="drawer-target" id="drawer-target">—</div>
+    <div class="drawer-sub" id="drawer-sub"></div>
+  </div>
+  <div class="drawer-body">
+    <div class="drawer-meta">
+      <div><div class="label">Notification UUID</div><div class="value uuid" id="drawer-uuid">—</div></div>
+      <div><div class="label">Linear issue</div><div class="value" id="drawer-linear">—</div></div>
+      <div><div class="label">Parent</div><div class="value" id="drawer-parent">—</div></div>
+      <div><div class="label">Findings stored</div><div class="value" id="drawer-findings">—</div></div>
+    </div>
+    <div>
+      <div class="eyebrow" style="margin-bottom: 8px">What happened</div>
+      <div id="drawer-steps"></div>
+    </div>
+    <div class="drawer-severity" id="drawer-severity-box">
+      <div class="eyebrow" style="margin-bottom: 12px">Severity mix</div>
+      <div id="drawer-severity"></div>
+      <div class="closing" id="drawer-priority"></div>
+    </div>
+    <div class="drawer-note">
+      This view is observational. To reprocess a delivery, re-run the scan in
+      Endor or replay the captured payload from the CLI.
+    </div>
+  </div>
+</aside>
+<script id="delivery-data" type="application/json">{{ drawer_data | tojson }}</script>
+{% endblock %}
+
+{% block scripts %}
+<script src="/dashboard/static/dashboard.js"></script>
+{% endblock %}
