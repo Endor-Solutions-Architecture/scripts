@@ -19,6 +19,11 @@ Boards but not Linear. This service fills that gap with no product changes.
 > model, and a support matrix of exactly what is and is not covered, with
 > current verification status.
 
+Ships with **Mission Control**, a built-in read-only operator dashboard at
+`/dashboard` (see [Endpoints](#mission-control-dashboard)):
+
+![Mission Control — the bridge's built-in operator dashboard](docs/mission-control.png)
+
 ## How issues are structured
 
 ```
@@ -320,3 +325,15 @@ pytest endor_linear_bridge/tests -v
 Module boundaries are enforced by convention and worth preserving: only
 `store.py` contains SQL, only `linear_client.py` contains GraphQL, and
 `handlers.py` contains neither.
+
+## License and disclaimer
+
+Licensed under the [MIT License](LICENSE).
+
+This is **not an official Endor Labs product** and is provided **as is,
+without warranty or guarantee of any kind** — no support commitment, no
+guarantee of correctness, reliability, or fitness for any purpose. It is a
+community bridge built on Endor Labs' standard webhook notification plugin;
+Endor Labs may change webhook payloads or APIs at any time without notice.
+Review the code and test against your own tenant before relying on it. Use at
+your own risk.
