@@ -1,0 +1,5 @@
+# Pin this app to 8502 so it can run side by side with the ai_credit_dashboard,
+# which uses Streamlit's default 8501. Picked up automatically when you
+# `streamlit run dashboard.py` from this directory; override with --server.port.
+[server]
+port = 8502
