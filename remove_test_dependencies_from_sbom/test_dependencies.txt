@@ -1,0 +1,6 @@
+MSTest.Analyzers
+MSTest.TestAdapter
+MSTest.TestFramework
+L0.Tests
+L3.Tests
+MSTest
