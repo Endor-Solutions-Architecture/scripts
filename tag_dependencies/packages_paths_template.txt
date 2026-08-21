@@ -1,0 +1,52 @@
+# Template for the packages-paths file consumed by tag_dependencies.py via
+# --packages-paths-file. The script finds PackageVersions in the project whose
+# path matches a pattern below, and tags every dependency imported by those
+# packages.
+#
+# Copy this file to `packages_paths.txt` (or any path you pass via
+# --packages-paths-file) and fill it with the manifest paths / glob patterns
+# you want to tag.
+#
+# Syntax
+# ------
+# Each non-comment, non-blank line is a glob pattern using the same syntax as
+# endorctl's --include-path / --exclude-path flags (gitignore-style globs):
+#
+#  * `**`         matches any number of path segments (recursive)
+#  * `*`          matches anything within a single path segment (no '/')
+#  * `?`          matches a single character
+#  * a literal path (e.g. `plugins/store-smb/build.gradle`) is an exact match
+#
+# Patterns are matched against the project-relative manifest path
+# (`spec.relative_path` on each PackageVersion). For backwards compatibility,
+# absolute paths from `spec.resolved_dependencies.dependency_files[].path`
+# are also accepted as literal matches.
+#
+# Just like endorctl, paths must be relative to the root of the project, so
+# you typically do NOT need a leading slash.
+#
+# Other rules:
+#  * Lines starting with '#' and blank lines are ignored.
+#  * Duplicate entries are de-duplicated automatically.
+#  * Patterns are case-sensitive.
+#
+# Examples (uncomment and edit to use)
+# ------------------------------------
+# Recursive — every file under a directory:
+# src/java/**
+# plugins/**
+#
+# Single Gradle subproject manifest:
+# plugins/store-smb/build.gradle
+#
+# One-segment wildcard (matches `plugins/*/build.gradle` but not deeper):
+# plugins/*/build.gradle
+#
+# Any build.gradle at any depth:
+# **/build.gradle
+#
+# Maven POMs anywhere under modules/:
+# modules/**/pom.xml
+#
+# Full absolute path also works as a literal match:
+# /path/to/your/checkout/plugins/store-smb/build.gradle
