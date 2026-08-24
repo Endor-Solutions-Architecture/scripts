@@ -6,7 +6,10 @@ Script to download an SBOM in SPDX format and remove test/dev dependencies.
 import argparse
 import json
 import os
+import re
 import sys
+import uuid
+from collections import Counter
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 import requests
@@ -500,6 +503,16 @@ def remove_test_dependencies(spdx_sbom, test_dependencies, organization_name=Non
         ]
         
         print(f"Cleaned up relationships, remaining: {len(cleaned_sbom['relationships'])}")
+
+    # documentDescribes points at packages too, so it has to lose the removed
+    # ones as well -- otherwise the document references ids that aren't there.
+    if "documentDescribes" in cleaned_sbom:
+        remaining_ids = {pkg.get("SPDXID") for pkg in cleaned_sbom.get("packages", [])}
+        described = [d for d in cleaned_sbom["documentDescribes"] if d in remaining_ids]
+        stale = len(cleaned_sbom["documentDescribes"]) - len(described)
+        cleaned_sbom["documentDescribes"] = described
+        if stale:
+            print(f"Removed {stale} stale documentDescribes entries")
     
     # Update document metadata
     current_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -522,6 +535,589 @@ def remove_test_dependencies(spdx_sbom, test_dependencies, organization_name=Non
     
     return cleaned_sbom
 
+# ---------------------------------------------------------------------------
+# SPDX online tool compliance (--spdx-online-tool-validation)
+#
+# The SPDX Online Tool at https://tools.spdx.org/app/ validates uploads against
+# the SPDX 2.3 spec. The sbom-export output trips several of its rules:
+#   * SPDXIDs are derived from raw package names, so npm scopes ("@scope/pkg"),
+#     Maven coordinates ("group:artifact") and Go module paths keep characters
+#     the spec forbids -- only letters, numbers, "." and "-" are allowed.
+#   * downloadLocation carries a Package URL ("pkg:npm/..."), which is not a
+#     download location. The purl belongs in externalRefs instead.
+#   * licenseConcluded/licenseDeclared can carry registry free text such as
+#     "The Apache Software License, Version 2.0". That is not a license
+#     expression, and it makes the validator fail while still parsing the file.
+# ---------------------------------------------------------------------------
+
+SPDX_LICENSE_LIST_URL = "https://spdx.org/licenses/licenses.json"
+SPDX_EXCEPTION_LIST_URL = "https://spdx.org/licenses/exceptions.json"
+SPDX_LICENSE_CACHE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), ".spdx_license_cache.json"
+)
+
+# Only consulted when the official list can be neither fetched nor read from
+# cache. Anything outside it becomes a LicenseRef, which is still valid -- just
+# less precise than the real identifier.
+FALLBACK_LICENSE_IDS = {
+    "0BSD", "AFL-2.1", "AGPL-3.0-only", "AGPL-3.0-or-later", "Apache-1.1",
+    "Apache-2.0", "Artistic-2.0", "BSD-2-Clause", "BSD-3-Clause", "BSD-4-Clause",
+    "BSL-1.0", "CC-BY-3.0", "CC-BY-4.0", "CC-BY-SA-4.0", "CC0-1.0", "CDDL-1.0",
+    "CDDL-1.1", "CPL-1.0", "EPL-1.0", "EPL-2.0", "EUPL-1.2", "GPL-2.0-only",
+    "GPL-2.0-or-later", "GPL-3.0-only", "GPL-3.0-or-later", "ICU", "ISC",
+    "JSON", "LGPL-2.0-only", "LGPL-2.1-only", "LGPL-2.1-or-later",
+    "LGPL-3.0-only", "LGPL-3.0-or-later", "MIT", "MIT-0", "MPL-1.1", "MPL-2.0",
+    "MS-PL", "NTP", "OFL-1.1", "OpenSSL", "PHP-3.01", "PSF-2.0", "Python-2.0",
+    "Ruby", "SSPL-1.0", "Unlicense", "UPL-1.0", "W3C", "WTFPL", "X11", "Zlib",
+    "ZPL-2.1",
+}
+
+FALLBACK_EXCEPTION_IDS = {
+    "Autoconf-exception-3.0", "Bison-exception-2.2", "Classpath-exception-2.0",
+    "Font-exception-2.0", "GCC-exception-3.1", "LLVM-exception",
+    "OpenJDK-assembly-exception-1.0",
+}
+
+# Free-text license names that package registries commonly emit, mapped onto the
+# SPDX identifier they mean. Keys are lowercased with whitespace collapsed.
+LICENSE_NAME_ALIASES = {
+    "the apache software license, version 2.0": "Apache-2.0",
+    "apache software license, version 2.0": "Apache-2.0",
+    "apache license, version 2.0": "Apache-2.0",
+    "apache license, version 2": "Apache-2.0",
+    "apache license version 2.0": "Apache-2.0",
+    "apache license v2.0": "Apache-2.0",
+    "apache license 2.0": "Apache-2.0",
+    "apache public license 2.0": "Apache-2.0",
+    "apache 2.0": "Apache-2.0",
+    "apache2": "Apache-2.0",
+    "asl 2.0": "Apache-2.0",
+    "the mit license": "MIT",
+    "the mit license (mit)": "MIT",
+    "mit license": "MIT",
+    "bsd license": "BSD-3-Clause",
+    "the bsd license": "BSD-3-Clause",
+    "new bsd license": "BSD-3-Clause",
+    "modified bsd license": "BSD-3-Clause",
+    "bsd 3-clause": "BSD-3-Clause",
+    "bsd 3-clause license": "BSD-3-Clause",
+    "bsd-3": "BSD-3-Clause",
+    "3-clause bsd license": "BSD-3-Clause",
+    "simplified bsd license": "BSD-2-Clause",
+    "bsd 2-clause": "BSD-2-Clause",
+    "2-clause bsd license": "BSD-2-Clause",
+    "the isc license": "ISC",
+    "isc license": "ISC",
+    "gnu general public license, version 2": "GPL-2.0-only",
+    "gnu general public license v2.0": "GPL-2.0-only",
+    "gnu general public license, version 3": "GPL-3.0-only",
+    "gnu lesser general public license": "LGPL-2.1-only",
+    "gnu lesser general public license, version 2.1": "LGPL-2.1-only",
+    "gnu lesser general public license v3.0": "LGPL-3.0-only",
+    "eclipse public license - v 1.0": "EPL-1.0",
+    "eclipse public license 1.0": "EPL-1.0",
+    "eclipse public license - v 2.0": "EPL-2.0",
+    "eclipse public license 2.0": "EPL-2.0",
+    "mozilla public license, version 2.0": "MPL-2.0",
+    "mozilla public license 2.0": "MPL-2.0",
+    "common development and distribution license 1.0": "CDDL-1.0",
+    "microsoft public license": "MS-PL",
+    "the unlicense": "Unlicense",
+    "public domain": "CC0-1.0",
+}
+
+# SPDX 2.3 relationship vocabulary. Anything outside it is rewritten to OTHER.
+SPDX_RELATIONSHIP_TYPES = {
+    "AMENDS", "ANCESTOR_OF", "BUILD_DEPENDENCY_OF", "BUILD_TOOL_OF",
+    "CONTAINED_BY", "CONTAINS", "COPY_OF", "DATA_FILE_OF", "DEPENDENCY_MANIFEST_OF",
+    "DEPENDENCY_OF", "DEPENDS_ON", "DESCENDANT_OF", "DESCRIBED_BY", "DESCRIBES",
+    "DEV_DEPENDENCY_OF", "DEV_TOOL_OF", "DISTRIBUTION_ARTIFACT", "DOCUMENTATION_OF",
+    "DYNAMIC_LINK", "EXAMPLE_OF", "EXPANDED_FROM_ARCHIVE", "FILE_ADDED",
+    "FILE_DELETED", "FILE_MODIFIED", "GENERATED_FROM", "GENERATES",
+    "HAS_PREREQUISITE", "METAFILE_OF", "OPTIONAL_COMPONENT_OF",
+    "OPTIONAL_DEPENDENCY_OF", "OTHER", "PACKAGE_OF", "PATCH_APPLIED", "PATCH_FOR",
+    "PREREQUISITE_FOR", "PROVIDED_DEPENDENCY_OF", "REQUIREMENT_DESCRIPTION_FOR",
+    "RUNTIME_DEPENDENCY_OF", "SPECIFICATION_FOR", "STATIC_LINK",
+    "TEST_CASE_OF", "TEST_DEPENDENCY_OF", "TEST_OF", "TEST_TOOL_OF", "VARIANT_OF",
+}
+
+_SPDX_ID_RE = re.compile(r'^SPDXRef-[A-Za-z0-9.\-]+$')
+_LICENSE_REF_RE = re.compile(r'^(?:DocumentRef-[A-Za-z0-9.\-]+:)?LicenseRef-[A-Za-z0-9.\-]+$')
+_LICENSE_OPERATORS = {"AND", "OR", "WITH"}
+# Mirrors the download location grammar in the SPDX spec (and in the reference
+# validators): an optional scheme, an optional userinfo part, then a host that
+# must carry a real dotted TLD -- so "https://deeplay-io/nice-grpc" is rejected.
+_URL_PATTERN = (
+    r"(http://www\.|https://www\.|http://|https://|ssh://|git://|svn://|sftp://|ftp://)?"
+    r"([\w\-.!~*'()%;:&=+$,]+@)?[a-z0-9]+([\-.][a-z0-9]+){0,100}\.[a-z]{2,5}"
+    r"(:[0-9]{1,5})?(/.*)?"
+)
+_URL_RE = re.compile(_URL_PATTERN, re.IGNORECASE)
+_DOWNLOAD_LOCATION_RE = re.compile(
+    r"^(((git|hg|svn|bzr)\+)?" + _URL_PATTERN + r"|"
+    r"(git\+git@[a-zA-Z0-9.\-]+:[a-zA-Z0-9/\\.@\-]+)|"
+    r"(bzr\+lp:[a-zA-Z0-9.\-]+))$",
+    re.IGNORECASE,
+)
+# An absolute URI with no fragment -- "urn:uuid:..." is as valid as "https://...".
+_URI_RE = re.compile(r'^[A-Za-z][A-Za-z0-9+.\-]*:[^\s#]+$')
+
+
+def _is_valid_download_location(text):
+    """Match the reference validator: a bare URL prefix or a full VCS location."""
+    return bool(_URL_RE.match(text) or _DOWNLOAD_LOCATION_RE.match(text))
+_ACTOR_RE = re.compile(r'^(?:Person|Organization):\s*\S')
+_CREATOR_RE = re.compile(r'^(?:Person|Organization|Tool):\s*\S')
+_TIMESTAMP_RE = re.compile(r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$')
+
+
+def load_spdx_license_ids():
+    """Return (license_ids, exception_ids) for validating license expressions.
+
+    Reads the cached copy of the official SPDX license list if one is present,
+    otherwise fetches it from spdx.org and caches it next to this script. Falls
+    back to a small built-in set when the list is unreachable -- delete
+    .spdx_license_cache.json to force a refresh.
+    """
+    if os.path.exists(SPDX_LICENSE_CACHE):
+        try:
+            with open(SPDX_LICENSE_CACHE, 'r') as f:
+                cached = json.load(f)
+            licenses = set(cached.get("licenses") or [])
+            exceptions = set(cached.get("exceptions") or [])
+            if licenses and exceptions:
+                print(f"Using cached SPDX license list {cached.get('version', 'unknown')} "
+                      f"({len(licenses)} licenses, {len(exceptions)} exceptions)")
+                return licenses, exceptions
+        except Exception as e:
+            print(f"Warning: could not read {SPDX_LICENSE_CACHE}: {e}")
+
+    try:
+        print("Fetching the official SPDX license list from spdx.org...")
+        lic_response = requests.get(SPDX_LICENSE_LIST_URL, timeout=60)
+        lic_response.raise_for_status()
+        lic_data = lic_response.json()
+
+        exc_response = requests.get(SPDX_EXCEPTION_LIST_URL, timeout=60)
+        exc_response.raise_for_status()
+        exc_data = exc_response.json()
+
+        licenses = {entry["licenseId"] for entry in lic_data.get("licenses", [])
+                    if entry.get("licenseId")}
+        exceptions = {entry["licenseExceptionId"] for entry in exc_data.get("exceptions", [])
+                      if entry.get("licenseExceptionId")}
+        version = lic_data.get("licenseListVersion", "unknown")
+
+        if not licenses:
+            raise ValueError("license list response contained no licenses")
+
+        try:
+            with open(SPDX_LICENSE_CACHE, 'w') as f:
+                json.dump({"version": version,
+                           "licenses": sorted(licenses),
+                           "exceptions": sorted(exceptions)}, f)
+        except Exception as e:
+            print(f"Warning: could not write {SPDX_LICENSE_CACHE}: {e}")
+
+        print(f"Loaded SPDX license list {version} "
+              f"({len(licenses)} licenses, {len(exceptions)} exceptions)")
+        return licenses, exceptions
+    except Exception as e:
+        print(f"Warning: could not fetch the SPDX license list: {e}")
+        print("Falling back to the built-in list; licenses outside it become LicenseRef- entries.")
+        return set(FALLBACK_LICENSE_IDS), set(FALLBACK_EXCEPTION_IDS)
+
+
+def sanitize_spdx_id(raw_id, used_ids):
+    """Return a spec-legal SPDXID, unique against used_ids.
+
+    The spec allows only letters, numbers, "." and "-" after the "SPDXRef-"
+    prefix, so npm scopes, Maven coordinates and module paths need rewriting.
+    """
+    text = str(raw_id or "")
+    body = text[len("SPDXRef-"):] if text.startswith("SPDXRef-") else text
+    body = re.sub(r'[^A-Za-z0-9.\-]', '-', body)
+    body = re.sub(r'-{2,}', '-', body).strip('-.')
+    if not body:
+        body = "Package"
+
+    candidate = f"SPDXRef-{body}"
+    unique = candidate
+    counter = 1
+    while unique in used_ids:
+        counter += 1
+        unique = f"{candidate}-{counter}"
+    used_ids.add(unique)
+    return unique
+
+
+def _license_expression_is_valid(expression, license_ids, exception_ids, known_refs):
+    """Check an SPDX license expression against the license list.
+
+    Walks the expression as operand/operator pairs so that adjacent identifiers
+    without a joining operator are rejected the same way the validator does.
+    """
+    depth = 0
+    for char in expression:
+        if char == '(':
+            depth += 1
+        elif char == ')':
+            depth -= 1
+            if depth < 0:
+                return False
+    if depth != 0:
+        return False
+
+    tokens = [t for t in re.split(r'[()\s]+', expression) if t]
+    if not tokens:
+        return False
+
+    expect = 'operand'
+    for token in tokens:
+        if expect == 'operand':
+            if token.upper() in _LICENSE_OPERATORS:
+                return False
+            base = token[:-1] if token.endswith('+') else token
+            if base in license_ids:
+                expect = 'operator'
+                continue
+            if _LICENSE_REF_RE.match(token) and token in known_refs:
+                expect = 'operator'
+                continue
+            return False
+        if expect == 'operator':
+            # SPDX requires the operators themselves to be upper case.
+            if token not in _LICENSE_OPERATORS:
+                return False
+            expect = 'exception' if token == 'WITH' else 'operand'
+            continue
+        if token not in exception_ids:
+            return False
+        expect = 'operator'
+    return expect == 'operator'
+
+
+class _LicenseNormalizer:
+    """Rewrites license fields into expressions the SPDX validator accepts."""
+
+    def __init__(self, license_ids, exception_ids, extracted_infos):
+        self.license_ids = license_ids
+        self.exception_ids = exception_ids
+        self.ci_ids = {lid.lower(): lid for lid in license_ids}
+        self.extracted = extracted_infos
+        self.known_refs = {info.get("licenseId") for info in extracted_infos
+                           if info.get("licenseId")}
+        self.used_ref_ids = set(self.known_refs)
+        self.by_text = {info.get("extractedText"): info.get("licenseId")
+                        for info in extracted_infos if info.get("extractedText")}
+        self.aliased = 0
+        self.reffed = 0
+
+    def _license_ref_for(self, text):
+        """Mint (or reuse) a LicenseRef that preserves the original text."""
+        if text in self.by_text:
+            return self.by_text[text]
+
+        slug = re.sub(r'[^A-Za-z0-9.\-]', '-', text)
+        slug = re.sub(r'-{2,}', '-', slug).strip('-.')[:60]
+        if not slug:
+            slug = "Unknown"
+
+        candidate = f"LicenseRef-{slug}"
+        unique = candidate
+        counter = 1
+        while unique in self.used_ref_ids:
+            counter += 1
+            unique = f"{candidate}-{counter}"
+
+        self.used_ref_ids.add(unique)
+        self.known_refs.add(unique)
+        self.by_text[text] = unique
+        self.extracted.append({
+            "licenseId": unique,
+            "extractedText": text,
+            "name": text,
+        })
+        self.reffed += 1
+        return unique
+
+    def normalize(self, value):
+        text = " ".join(str(value).split()) if value is not None else ""
+        if not text:
+            return "NOASSERTION"
+        if text in ("NOASSERTION", "NONE"):
+            return text
+        if _license_expression_is_valid(text, self.license_ids,
+                                        self.exception_ids, self.known_refs):
+            return text
+
+        # Try the spelling as-is, then without a leading "The ", which is the
+        # only thing separating a lot of registry names from the alias table.
+        lowered = text.lower()
+        for key in (lowered, re.sub(r'^the\s+', '', lowered)):
+            alias = LICENSE_NAME_ALIASES.get(key)
+            if alias and alias in self.license_ids:
+                self.aliased += 1
+                return alias
+
+        # "apache-2.0" and "MIT " differ from the canonical spelling only in case.
+        canonical = self.ci_ids.get(text.lower())
+        if canonical:
+            self.aliased += 1
+            return canonical
+
+        return self._license_ref_for(text)
+
+
+def _ensure_purl_external_ref(package, purl):
+    """Record a Package URL where SPDX expects it -- externalRefs."""
+    refs = package.setdefault("externalRefs", [])
+    for ref in refs:
+        if ref.get("referenceType") == "purl" and ref.get("referenceLocator") == purl:
+            return
+    refs.append({
+        "referenceCategory": "PACKAGE-MANAGER",
+        "referenceType": "purl",
+        "referenceLocator": purl,
+    })
+
+
+def _fix_download_location(package, stats):
+    """downloadLocation must be NONE, NOASSERTION, a URL or a VCS location."""
+    raw = package.get("downloadLocation")
+    text = str(raw).strip() if raw is not None else ""
+
+    if text in ("NONE", "NOASSERTION"):
+        return
+    if text and _is_valid_download_location(text):
+        return
+
+    if text.startswith("pkg:"):
+        _ensure_purl_external_ref(package, text)
+        stats["purls_moved_to_external_refs"] += 1
+    elif text:
+        # Park the unusable value in sourceInfo rather than dropping it silently.
+        note = f"Original downloadLocation: {text}"
+        existing = str(package.get("sourceInfo") or "").strip()
+        if note not in existing:
+            package["sourceInfo"] = f"{existing}\n{note}" if existing else note
+        stats["download_locations_moved_to_source_info"] += 1
+    else:
+        stats["download_locations_filled_in"] += 1
+
+    package["downloadLocation"] = "NOASSERTION"
+
+
+def _fix_actor_field(package, field, stats):
+    """supplier/originator must be NOASSERTION or a Person:/Organization: entry."""
+    if field not in package:
+        return
+    text = " ".join(str(package[field]).split())
+    if text == "NOASSERTION" or _ACTOR_RE.match(text):
+        package[field] = text
+        return
+    package[field] = "NOASSERTION"
+    stats[f"{field}_fields_reset"] += 1
+
+
+def make_spdx_online_tool_compliant(spdx_sbom):
+    """Rewrite an SPDX document so https://tools.spdx.org/app/ accepts it.
+
+    Returns (document, stats). The input is left untouched.
+    """
+    print("Applying SPDX online tool compliance fixes...")
+    doc = json.loads(json.dumps(spdx_sbom))
+    stats = Counter()
+
+    license_ids, exception_ids = load_spdx_license_ids()
+
+    # --- document level ------------------------------------------------------
+    if doc.get("spdxVersion") not in ("SPDX-2.2", "SPDX-2.3"):
+        doc["spdxVersion"] = "SPDX-2.3"
+        stats["document_fields_fixed"] += 1
+    if doc.get("dataLicense") != "CC0-1.0":
+        doc["dataLicense"] = "CC0-1.0"
+        stats["document_fields_fixed"] += 1
+    if doc.get("SPDXID") != "SPDXRef-DOCUMENT":
+        doc["SPDXID"] = "SPDXRef-DOCUMENT"
+        stats["document_fields_fixed"] += 1
+    if not str(doc.get("name") or "").strip():
+        doc["name"] = "SPDX Document"
+        stats["document_fields_fixed"] += 1
+
+    namespace = str(doc.get("documentNamespace") or "").strip()
+    if '#' in namespace:
+        namespace = namespace.split('#', 1)[0]
+    if not _URI_RE.match(namespace):
+        namespace = f"https://endorlabs.com/spdx/documents/{uuid.uuid4()}"
+    if namespace != doc.get("documentNamespace"):
+        doc["documentNamespace"] = namespace
+        stats["document_fields_fixed"] += 1
+
+    creation_info = doc.setdefault("creationInfo", {})
+    creators = [" ".join(str(c).split()) for c in creation_info.get("creators", [])
+                if isinstance(c, str)]
+    valid_creators = [c for c in creators if _CREATOR_RE.match(c)]
+    if len(valid_creators) != len(creators):
+        stats["creators_dropped"] += len(creators) - len(valid_creators)
+    if not valid_creators:
+        valid_creators = ["Tool: endorlabs-remove-test-dependencies"]
+        stats["document_fields_fixed"] += 1
+    creation_info["creators"] = valid_creators
+    if not _TIMESTAMP_RE.match(str(creation_info.get("created") or "")):
+        creation_info["created"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        stats["document_fields_fixed"] += 1
+
+    # --- extracted licensing info -------------------------------------------
+    extracted = [info for info in doc.get("hasExtractedLicensingInfos", [])
+                 if isinstance(info, dict)]
+    for info in extracted:
+        license_id = str(info.get("licenseId") or "")
+        if not _LICENSE_REF_RE.match(license_id):
+            slug = re.sub(r'[^A-Za-z0-9.\-]', '-', license_id.replace("LicenseRef-", ""))
+            slug = re.sub(r'-{2,}', '-', slug).strip('-.') or "Unknown"
+            info["licenseId"] = f"LicenseRef-{slug}"
+            stats["extracted_license_ids_fixed"] += 1
+        if not str(info.get("extractedText") or "").strip():
+            info["extractedText"] = info.get("name") or info["licenseId"]
+            stats["extracted_license_ids_fixed"] += 1
+    normalizer = _LicenseNormalizer(license_ids, exception_ids, extracted)
+
+    # --- SPDXID remapping ----------------------------------------------------
+    # Reserve the document id, then rewrite every element id that breaks the
+    # charset rule, keeping a map so references can follow.
+    used_ids = {"SPDXRef-DOCUMENT"}
+    id_map = {}
+
+    def remap(element):
+        original = element.get("SPDXID")
+        if original in used_ids or not _SPDX_ID_RE.match(str(original or "")):
+            new_id = sanitize_spdx_id(original, used_ids)
+            if new_id != original:
+                stats["spdx_ids_rewritten"] += 1
+            element["SPDXID"] = new_id
+        else:
+            used_ids.add(original)
+            new_id = original
+        if original is not None and original not in id_map:
+            id_map[original] = new_id
+
+    for package in doc.get("packages", []):
+        remap(package)
+    for spdx_file in doc.get("files", []):
+        remap(spdx_file)
+    for snippet in doc.get("snippets", []):
+        remap(snippet)
+
+    def resolve(reference):
+        """Map an old id onto its rewritten form, or None if it no longer exists."""
+        if reference in ("SPDXRef-DOCUMENT", "NONE", "NOASSERTION"):
+            return reference
+        mapped = id_map.get(reference, reference)
+        return mapped if mapped in used_ids else None
+
+    # --- packages ------------------------------------------------------------
+    for package in doc.get("packages", []):
+        _fix_download_location(package, stats)
+        _fix_actor_field(package, "supplier", stats)
+        _fix_actor_field(package, "originator", stats)
+
+        for field in ("licenseConcluded", "licenseDeclared"):
+            if field in package:
+                fixed = normalizer.normalize(package[field])
+                if fixed != package[field]:
+                    stats["license_fields_fixed"] += 1
+                package[field] = fixed
+
+        if "licenseInfoFromFiles" in package:
+            package["licenseInfoFromFiles"] = [normalizer.normalize(v)
+                                               for v in package["licenseInfoFromFiles"]]
+        if not str(package.get("copyrightText") or "").strip():
+            package["copyrightText"] = "NOASSERTION"
+
+        if "hasFiles" in package:
+            kept = [r for r in (resolve(f) for f in package["hasFiles"]) if r]
+            package["hasFiles"] = kept
+        # No file list means no file analysis, and saying so keeps the validator
+        # from demanding a packageVerificationCode.
+        if not package.get("hasFiles") and "packageVerificationCode" not in package:
+            if package.get("filesAnalyzed") is not False:
+                package["filesAnalyzed"] = False
+                stats["files_analyzed_set_false"] += 1
+            package.pop("hasFiles", None)
+
+    for spdx_file in doc.get("files", []):
+        for field in ("licenseConcluded",):
+            if field in spdx_file:
+                spdx_file[field] = normalizer.normalize(spdx_file[field])
+        if "licenseInfoInFiles" in spdx_file:
+            spdx_file["licenseInfoInFiles"] = [normalizer.normalize(v)
+                                               for v in spdx_file["licenseInfoInFiles"]]
+        if not str(spdx_file.get("copyrightText") or "").strip():
+            spdx_file["copyrightText"] = "NOASSERTION"
+
+    # --- references ----------------------------------------------------------
+    if "documentDescribes" in doc:
+        described = [r for r in (resolve(d) for d in doc["documentDescribes"]) if r]
+        dropped = len(doc["documentDescribes"]) - len(described)
+        if dropped:
+            stats["document_describes_dropped"] += dropped
+        doc["documentDescribes"] = described
+
+    if "relationships" in doc:
+        kept_relationships = []
+        for relationship in doc["relationships"]:
+            source = resolve(relationship.get("spdxElementId"))
+            target = resolve(relationship.get("relatedSpdxElement"))
+            if not source or not target:
+                stats["relationships_dropped"] += 1
+                continue
+            relationship["spdxElementId"] = source
+            relationship["relatedSpdxElement"] = target
+            if relationship.get("relationshipType") not in SPDX_RELATIONSHIP_TYPES:
+                relationship["relationshipType"] = "OTHER"
+                stats["relationship_types_fixed"] += 1
+            kept_relationships.append(relationship)
+        doc["relationships"] = kept_relationships
+
+    # A document holding more than one package must state what it describes.
+    packages = doc.get("packages", [])
+    single_package_only = (len(packages) == 1 and not doc.get("files")
+                           and not doc.get("snippets"))
+    if packages and not single_package_only:
+        relationships = doc.setdefault("relationships", [])
+        has_describes = any(
+            (r.get("relationshipType") == "DESCRIBES"
+             and r.get("spdxElementId") == "SPDXRef-DOCUMENT")
+            or (r.get("relationshipType") == "DESCRIBED_BY"
+                and r.get("relatedSpdxElement") == "SPDXRef-DOCUMENT")
+            for r in relationships
+        )
+        if not has_describes:
+            described = doc.get("documentDescribes") or [p.get("SPDXID") for p in packages]
+            for spdx_id in described:
+                relationships.append({
+                    "spdxElementId": "SPDXRef-DOCUMENT",
+                    "relatedSpdxElement": spdx_id,
+                    "relationshipType": "DESCRIBES",
+                })
+            stats["describes_relationships_added"] += len(described)
+
+    if extracted:
+        doc["hasExtractedLicensingInfos"] = extracted
+    stats["licenses_mapped_to_spdx_ids"] += normalizer.aliased
+    stats["licenses_converted_to_license_refs"] += normalizer.reffed
+
+    if stats:
+        print("SPDX compliance changes:")
+        for key in sorted(stats):
+            print(f"  {key.replace('_', ' ')}: {stats[key]}")
+    else:
+        print("SPDX compliance: no changes needed.")
+
+    return doc, stats
+
+
 def main():
     """Main function."""
     parser = argparse.ArgumentParser(description='Download SPDX SBOM and remove test dependencies.')
@@ -534,6 +1130,8 @@ def main():
                        help='File containing test dependencies to remove (default: test_dependencies.txt)')
     parser.add_argument('--organization', type=str, help='Organization name for SBOM creation info')
     parser.add_argument('--person-email', type=str, help='Person email for SBOM creation info')
+    parser.add_argument('--spdx-online-tool-validation', action='store_true',
+                       help='Rewrite the cleaned SBOM so it validates at https://tools.spdx.org/app/')
     
     args = parser.parse_args()
 
@@ -647,7 +1245,6 @@ def main():
             if '@' in person_info:
                 # Extract email from "Name (email@domain.com)" format
                 if '(' in person_info and ')' in person_info:
-                    import re
                     email_match = re.search(r'\(([^)]+)\)', person_info)
                     if email_match:
                         final_person_email = email_match.group(1)
@@ -680,6 +1277,11 @@ def main():
     cleaned_spdx = remove_test_dependencies(spdx_data, all_test_deps, 
                                            final_organization_name, 
                                            final_person_email)
+
+    # Rewrite the cleaned SBOM so https://tools.spdx.org/app/ accepts the upload.
+    # The original SBOM is left exactly as the API returned it.
+    if args.spdx_online_tool_validation:
+        cleaned_spdx, _ = make_spdx_online_tool_compliant(cleaned_spdx)
     
     # Save the original SPDX SBOM
     original_output = args.output.replace('-cleaned-', '-original-')
@@ -696,6 +1298,8 @@ def main():
     print(f"Original packages: {len(spdx_data.get('packages', []))}")
     print(f"Cleaned packages: {len(cleaned_spdx.get('packages', []))}")
     print(f"Removed packages: {len(spdx_data.get('packages', [])) - len(cleaned_spdx.get('packages', []))}")
+    if args.spdx_online_tool_validation:
+        print(f"Upload {args.output} to https://tools.spdx.org/app/validate/ to confirm.")
 
 if __name__ == "__main__":
     main()
