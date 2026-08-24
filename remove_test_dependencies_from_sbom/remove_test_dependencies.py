@@ -10,6 +10,7 @@ import re
 import sys
 import uuid
 from collections import Counter
+from urllib.parse import unquote
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 import requests
@@ -292,9 +293,10 @@ def get_package_versions(namespace, token, project_uuid, branch=None, default_br
     print(f"Total packageVersions found: {len(package_versions)}")
     return package_versions
 
-def create_spdx_sbom_export(namespace, token, package_version_uuids, project_name=None, output_format="FORMAT_JSON"):
+def create_sbom_export(namespace, token, package_version_uuids, sbom_kind="SBOM_KIND_SPDX",
+                       project_name=None, output_format="FORMAT_JSON"):
     """
-    Create an SPDX SBOM export including multiple packageVersions.
+    Create an SBOM export of the given kind covering multiple packageVersions.
     """
     url = f"{API_URL}/namespaces/{namespace}/sbom-export"
     headers = {
@@ -303,6 +305,8 @@ def create_spdx_sbom_export(namespace, token, package_version_uuids, project_nam
         "Request-Timeout": "600"
     }
     
+    label = "CycloneDX" if sbom_kind == "SBOM_KIND_CYCLONEDX" else "SPDX"
+
     # Use project name if available, otherwise fall back to namespace
     sbom_name = project_name if project_name else f"{namespace}-sbom"
     
@@ -311,10 +315,10 @@ def create_spdx_sbom_export(namespace, token, package_version_uuids, project_nam
             "namespace": namespace
         },
         "meta": {
-            "name": f"SPDX SBOM Export: {sbom_name}"
+            "name": f"{label} SBOM Export: {sbom_name}"
         },
         "spec": {
-            "kind": "SBOM_KIND_SPDX",
+            "kind": sbom_kind,
             "format": output_format,
             "component_type": "COMPONENT_TYPE_APPLICATION",
             "export_parameters": {
@@ -324,7 +328,7 @@ def create_spdx_sbom_export(namespace, token, package_version_uuids, project_nam
     }
     
     try:
-        print(f"Creating SPDX SBOM export for {len(package_version_uuids)} packageVersions...")
+        print(f"Creating {label} SBOM export for {len(package_version_uuids)} packageVersions...")
         response = requests.post(url, headers=headers, json=payload, timeout=600)
         response.raise_for_status()
         
@@ -332,10 +336,214 @@ def create_spdx_sbom_export(namespace, token, package_version_uuids, project_nam
         return sbom_data
         
     except requests.exceptions.RequestException as e:
-        print(f"Failed to create SPDX SBOM export: {e}")
+        print(f"Failed to create {label} SBOM export: {e}")
         if hasattr(e, 'response') and e.response is not None:
             print(f"Response: {e.response.text}")
         return None
+
+def create_spdx_sbom_export(namespace, token, package_version_uuids, project_name=None, output_format="FORMAT_JSON"):
+    """Create an SPDX SBOM export including multiple packageVersions."""
+    return create_sbom_export(namespace, token, package_version_uuids,
+                              "SBOM_KIND_SPDX", project_name, output_format)
+
+
+def _purl_key(purl):
+    """Normalize a purl so the two exports join even when escaping differs."""
+    return unquote(str(purl or "")).strip().lower()
+
+
+def fetch_cyclonedx_enrichment(namespace, token, package_version_uuids, project_name=None):
+    """Collect licenses and repository URLs from the CycloneDX export of the same packages.
+
+    The SPDX export leaves licenseConcluded, licenseDeclared and downloadLocation
+    as NOASSERTION, but the CycloneDX export of the very same packageVersions
+    carries both. Returns a lookup keyed by purl and by "name@version"; an empty
+    dict means the export failed and nothing will be filled in.
+    """
+    response = create_sbom_export(namespace, token, package_version_uuids,
+                                  "SBOM_KIND_CYCLONEDX", project_name)
+    if not response:
+        print("Warning: CycloneDX export failed; NOASSERTION values will be left alone.")
+        return {}
+
+    content = response.get('spec', {}).get('data')
+    try:
+        data = json.loads(content) if isinstance(content, str) else (content or {})
+    except json.JSONDecodeError:
+        print("Warning: could not parse the CycloneDX export; NOASSERTION values left alone.")
+        return {}
+
+    lookup = {}
+    with_license = 0
+    components = data.get("components", [])
+    for component in components:
+        licenses = []
+        for entry in component.get("licenses", []):
+            if "expression" in entry:
+                value = entry.get("expression")
+            else:
+                license_obj = entry.get("license", {})
+                value = license_obj.get("id") or license_obj.get("name")
+            if value:
+                licenses.append(str(value))
+
+        repository_url = None
+        for ref in component.get("externalReferences", []):
+            if ref.get("url") and ref.get("type") in ("vcs", "distribution"):
+                repository_url = ref["url"]
+                if ref.get("type") == "vcs":
+                    break
+
+        if not licenses and not repository_url:
+            continue
+
+        if licenses:
+            with_license += 1
+
+        record = {"licenses": licenses, "repository_url": repository_url}
+        if component.get("purl"):
+            lookup[_purl_key(component["purl"])] = record
+        name, version = component.get("name"), component.get("version")
+        if name and version:
+            lookup.setdefault(f"{name}@{version}".lower(), record)
+
+    print(f"CycloneDX export: {len(components)} components, "
+          f"{with_license} carrying license data")
+    return lookup
+
+
+# Endor's public namespace, where it records analysis of OSS package versions.
+OSS_NAMESPACE = "oss"
+LICENSE_METRIC_NAME = "pkg_version_info_for_license"
+API_BATCH_SIZE = 100
+
+# SPDX defines supplier as the organization providing the package, and for an OSS
+# dependency that is the registry it was fetched from. The purl names that
+# registry outright, so this is a fact about the package rather than a guess.
+REGISTRY_SUPPLIERS = {
+    "npm": "npmjs.com",
+    "nuget": "nuget.org",
+    "maven": "repo.maven.apache.org",
+    "golang": "proxy.golang.org",
+    "pypi": "pypi.org",
+    "cargo": "crates.io",
+    "gem": "rubygems.org",
+    "composer": "packagist.org",
+    "cocoapods": "cocoapods.org",
+    "conan": "conan.io",
+    "cran": "cran.r-project.org",
+    "hackage": "hackage.haskell.org",
+    "hex": "hex.pm",
+    "pub": "pub.dev",
+    "swift": "swiftpackageindex.com",
+    "github": "github.com",
+    "githubactions": "github.com",
+    "docker": "docker.io",
+    "oci": "docker.io",
+}
+
+
+def _endor_package_name(purl):
+    """Convert a purl into the name Endor uses, e.g. npm://lodash@4.17.21."""
+    text = unquote(str(purl or ""))
+    if not text.startswith("pkg:") or "/" not in text:
+        return None
+    ecosystem, rest = text[len("pkg:"):].split("/", 1)
+    return f"{ecosystem}://{rest}" if ecosystem and rest else None
+
+
+def _list_resource(namespace, token, resource, filter_expression, mask, page_size=500):
+    """Run a single list query against the Endor API and return the objects."""
+    url = f"{API_URL}/namespaces/{namespace}/{resource}"
+    headers = {"Authorization": f"Bearer {token}", "Request-Timeout": "600"}
+    params = {
+        "list_parameters.filter": filter_expression,
+        "list_parameters.mask": mask,
+        "list_parameters.page_size": page_size,
+    }
+    response = requests.get(url, headers=headers, params=params, timeout=600)
+    response.raise_for_status()
+    return response.json().get("list", {}).get("objects", [])
+
+
+def _extract_copyrights(value):
+    """Pull copyright notices out of a metric value.
+
+    They sit at metric_values -> licenseInfoType -> license_info -> copyrights,
+    but the walk is defensive so a reshaped metric keeps working.
+    """
+    if isinstance(value, dict):
+        notices = value.get("copyrights")
+        if isinstance(notices, list) and notices:
+            return [str(n).strip() for n in notices if str(n).strip()]
+        for nested in value.values():
+            found = _extract_copyrights(nested)
+            if found:
+                return found
+    return []
+
+
+def fetch_copyright_data(token, purls):
+    """Look up copyright notices for OSS packages in Endor's public namespace.
+
+    Endor records the copyright notices it finds in a package's source on the
+    pkg_version_info_for_license metric, but the SBOM export does not carry them,
+    so copyrightText arrives as NOASSERTION for every package. Returns a lookup
+    of purl key -> newline-joined notices; an empty dict means none were found.
+    """
+    names = {}
+    for purl in purls:
+        name = _endor_package_name(purl)
+        if name:
+            names.setdefault(name, _purl_key(purl))
+    if not names:
+        return {}
+
+    name_list = list(names)
+    uuid_to_key = {}
+    try:
+        for start in range(0, len(name_list), API_BATCH_SIZE):
+            batch = name_list[start:start + API_BATCH_SIZE]
+            for obj in _list_resource(OSS_NAMESPACE, token, "package-versions",
+                                      "meta.name in [" + ",".join(batch) + "]",
+                                      "uuid,meta.name"):
+                key = names.get(obj.get("meta", {}).get("name"))
+                if key and obj.get("uuid"):
+                    uuid_to_key[obj["uuid"]] = key
+    except requests.exceptions.RequestException as e:
+        print(f"Warning: could not resolve packages for the copyright lookup: {e}")
+        return {}
+
+    if not uuid_to_key:
+        print("No matching OSS package versions found; copyright notices unavailable.")
+        return {}
+
+    copyrights = {}
+    uuids = list(uuid_to_key)
+    try:
+        for start in range(0, len(uuids), API_BATCH_SIZE):
+            batch = uuids[start:start + API_BATCH_SIZE]
+            for obj in _list_resource(
+                    OSS_NAMESPACE, token, "metrics",
+                    f"meta.name=={LICENSE_METRIC_NAME} and meta.parent_uuid in ["
+                    + ",".join(batch) + "]",
+                    "meta.parent_uuid,spec.metric_values"):
+                key = uuid_to_key.get(obj.get("meta", {}).get("parent_uuid"))
+                if not key:
+                    continue
+                for value in (obj.get("spec", {}).get("metric_values") or {}).values():
+                    notices = _extract_copyrights(value)
+                    if notices:
+                        # dict.fromkeys de-duplicates while keeping the order.
+                        copyrights[key] = "\n".join(dict.fromkeys(notices))
+                        break
+    except requests.exceptions.RequestException as e:
+        print(f"Warning: could not fetch copyright metrics: {e}")
+        return copyrights
+
+    print(f"Copyright notices found for {len(copyrights)} of {len(names)} packages")
+    return copyrights
+
 
 def get_test_dependencies_from_api(namespace, token, project_uuid, branch=None, default_branch=None):
     """Query Endor Labs API to get test dependencies for a project."""
@@ -920,8 +1128,143 @@ def _fix_actor_field(package, field, stats):
     stats[f"{field}_fields_reset"] += 1
 
 
-def make_spdx_online_tool_compliant(spdx_sbom):
+def _is_unset(value):
+    """True when a field carries no actual information."""
+    return str(value or "").strip() in ("", "NOASSERTION", "NONE")
+
+
+def _lookup_enrichment(package, enrichment):
+    """Find a package's CycloneDX record, by purl first and then name@version."""
+    if not enrichment:
+        return None
+
+    location = str(package.get("downloadLocation") or "")
+    if location.startswith("pkg:"):
+        record = enrichment.get(_purl_key(location))
+        if record:
+            return record
+
+    for ref in package.get("externalRefs", []):
+        if ref.get("referenceType") == "purl":
+            record = enrichment.get(_purl_key(ref.get("referenceLocator")))
+            if record:
+                return record
+
+    name, version = package.get("name"), package.get("versionInfo")
+    if name and version:
+        return enrichment.get(f"{name}@{version}".lower())
+    return None
+
+
+def _fill_licenses_from_record(package, record, stats):
+    """Fill license fields that assert nothing. Real values are never overwritten."""
+    licenses = record.get("licenses") or []
+    if not licenses:
+        return
+
+    if len(licenses) == 1:
+        expression = licenses[0]
+    else:
+        # Several declared licenses means all of them apply. Parenthesize any
+        # entry that is itself an expression so the AND binds the way it reads.
+        expression = " AND ".join(f"({item})" if " " in item else item
+                                  for item in licenses)
+
+    filled = False
+    for field in ("licenseConcluded", "licenseDeclared"):
+        if _is_unset(package.get(field)):
+            package[field] = expression
+            filled = True
+    if filled:
+        stats["licenses_filled_from_cyclonedx"] += 1
+
+
+def _fill_download_location_from_record(package, record, stats):
+    """Use the repository URL when the export supplied no download location."""
+    url = record.get("repository_url")
+    if not url or not _is_unset(package.get("downloadLocation")):
+        return
+    if _is_valid_download_location(str(url)):
+        package["downloadLocation"] = str(url)
+        stats["download_locations_filled_from_cyclonedx"] += 1
+
+
+def _purl_type(package):
+    """The purl ecosystem for a package, or None when it carries no purl."""
+    locators = [ref.get("referenceLocator") for ref in package.get("externalRefs", [])
+                if ref.get("referenceType") == "purl"]
+    locators.append(package.get("downloadLocation"))
+    for locator in locators:
+        text = unquote(str(locator or ""))
+        if text.startswith("pkg:") and "/" in text:
+            return text[len("pkg:"):].split("/", 1)[0].lower()
+    return None
+
+
+def _package_purl_key(package):
+    """The normalized purl for a package, for joining against API lookups."""
+    for ref in package.get("externalRefs", []):
+        if ref.get("referenceType") == "purl" and ref.get("referenceLocator"):
+            return _purl_key(ref["referenceLocator"])
+    location = str(package.get("downloadLocation") or "")
+    return _purl_key(location) if location.startswith("pkg:") else None
+
+
+def _fill_supplier_from_registry(package, stats):
+    """Name the registry that supplied the package when nothing else is known."""
+    if not _is_unset(package.get("supplier")):
+        return
+    registry = REGISTRY_SUPPLIERS.get(_purl_type(package))
+    if not registry:
+        return
+    package["supplier"] = f"Organization: {registry}"
+    stats["suppliers_set_to_registry"] += 1
+
+
+def _fill_root_package(doc, root_version, stats):
+    """Complete the package the document describes -- the application itself.
+
+    Its supplier is the organization configured in Endor's SBOM settings, which
+    the export records in creationInfo.creators rather than on the package that
+    the conformance checker actually reads.
+    """
+    described = set(doc.get("documentDescribes") or [])
+    for relationship in doc.get("relationships", []):
+        kind = relationship.get("relationshipType")
+        if kind == "DESCRIBES" and relationship.get("spdxElementId") == "SPDXRef-DOCUMENT":
+            described.add(relationship.get("relatedSpdxElement"))
+        elif kind == "DESCRIBED_BY" and relationship.get("relatedSpdxElement") == "SPDXRef-DOCUMENT":
+            described.add(relationship.get("spdxElementId"))
+    if not described:
+        return
+
+    organization = next((c for c in doc.get("creationInfo", {}).get("creators", [])
+                         if str(c).startswith("Organization: ")), None)
+
+    for package in doc.get("packages", []):
+        if package.get("SPDXID") not in described:
+            continue
+        # OSS dependencies carry a purl; the application does not.
+        if _purl_type(package):
+            continue
+        if organization and _is_unset(package.get("supplier")):
+            package["supplier"] = organization
+            stats["root_supplier_from_sbom_settings"] += 1
+        if root_version and not str(package.get("versionInfo") or "").strip():
+            package["versionInfo"] = root_version
+            stats["root_versions_filled"] += 1
+
+
+def make_spdx_online_tool_compliant(spdx_sbom, enrichment=None, copyrights=None,
+                                    root_version=None):
     """Rewrite an SPDX document so https://tools.spdx.org/app/ accepts it.
+
+    When `enrichment` holds CycloneDX data from fetch_cyclonedx_enrichment, any
+    license or download location the SPDX export left as NOASSERTION is filled
+    in from it. `copyrights` from fetch_copyright_data does the same for
+    copyrightText, and every package still missing a supplier is attributed to
+    the registry that distributed it. Fields that already carry a real value are
+    never overwritten.
 
     Returns (document, stats). The input is left untouched.
     """
@@ -1018,9 +1361,25 @@ def make_spdx_online_tool_compliant(spdx_sbom):
 
     # --- packages ------------------------------------------------------------
     for package in doc.get("packages", []):
+        # Look the package up before the purl moves out of downloadLocation,
+        # then fill the download location once _fix_download_location has run.
+        record = _lookup_enrichment(package, enrichment)
+        purl_key = _package_purl_key(package)
+        if record:
+            _fill_licenses_from_record(package, record, stats)
         _fix_download_location(package, stats)
+        if record:
+            _fill_download_location_from_record(package, record, stats)
         _fix_actor_field(package, "supplier", stats)
         _fix_actor_field(package, "originator", stats)
+        # Attribute the package after the actor fields are normalized, so a
+        # malformed supplier that was just reset also gets a registry.
+        _fill_supplier_from_registry(package, stats)
+
+        notices = (copyrights or {}).get(purl_key)
+        if notices and _is_unset(package.get("copyrightText")):
+            package["copyrightText"] = notices
+            stats["copyright_notices_filled"] += 1
 
         for field in ("licenseConcluded", "licenseDeclared"):
             if field in package:
@@ -1102,6 +1461,8 @@ def make_spdx_online_tool_compliant(spdx_sbom):
                     "relationshipType": "DESCRIBES",
                 })
             stats["describes_relationships_added"] += len(described)
+
+    _fill_root_package(doc, root_version, stats)
 
     if extracted:
         doc["hasExtractedLicensingInfos"] = extracted
@@ -1281,7 +1642,20 @@ def main():
     # Rewrite the cleaned SBOM so https://tools.spdx.org/app/ accepts the upload.
     # The original SBOM is left exactly as the API returned it.
     if args.spdx_online_tool_validation:
-        cleaned_spdx, _ = make_spdx_online_tool_compliant(cleaned_spdx)
+        enrichment = fetch_cyclonedx_enrichment(namespace, token,
+                                                package_version_uuids, project_name)
+        purls = [key for key in (_package_purl_key(pkg)
+                                 for pkg in cleaned_spdx.get("packages", [])) if key]
+        copyrights = fetch_copyright_data(token, purls)
+
+        # The application's own version: Endor supplies none for the root
+        # component, so fall back to the ref that was analyzed.
+        root_version = args.branch or default_branch or ""
+        if root_version.startswith("refs/heads/"):
+            root_version = root_version[len("refs/heads/"):]
+
+        cleaned_spdx, _ = make_spdx_online_tool_compliant(
+            cleaned_spdx, enrichment, copyrights, root_version or None)
     
     # Save the original SPDX SBOM
     original_output = args.output.replace('-cleaned-', '-original-')

@@ -1,9 +1,5 @@
-# Cached copy of the official SPDX license list, refetched on demand.
-.spdx_license_cache.json
-
-# SBOMs written by the script.
-*-original-spdx.json
-*-cleaned-spdx.json
+# Generated SBOMs and the cached SPDX license list.
+*.json
 
 .env
 .env.*

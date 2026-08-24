@@ -1,3 +1,4 @@
 requests
 python-dotenv
 spdx-tools
+ntia-conformance-checker
