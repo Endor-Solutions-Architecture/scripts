@@ -1,0 +1,8 @@
+# Generated SBOMs and the cached SPDX license list.
+*.json
+
+.env
+.env.*
+.env~
+venv/
+__pycache__/
