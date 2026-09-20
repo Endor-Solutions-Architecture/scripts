@@ -49,6 +49,12 @@ def _fmt_pct(value: Optional[float]) -> str:
     return f"{value:.1f}%"
 
 
+def _fmt_pct_denom(value: Optional[float], n: int, d: int) -> str:
+    if value is None:
+        return "n/a"
+    return f"{value:.1f}% ({n} / {d})"
+
+
 def _fmt_generated_at(value: str) -> str:
     if not value:
         return "n/a"
@@ -399,7 +405,11 @@ def _section_a(
             )
         )
     type_rows = [
-        [row.violation_type, str(row.checks_with_type), _fmt_pct(row.rate)]
+        [
+            row.violation_type,
+            str(row.checks_with_type),
+            _fmt_pct_denom(row.rate, row.checks_with_type, analysis.checks_total),
+        ]
         for row in analysis.by_violation_type
     ]
     if type_rows:
@@ -528,6 +538,29 @@ def _section_c(analysis: Analysis, styles: Dict[str, Any], page_w: float) -> Lis
                 "worksheet finding and are listed, not dropped from the sample "
                 "in silence.",
                 styles["body"],
+            )
+        )
+        shown = analysis.unmatched_labels[:MAX_REPO_ROWS]
+        rows = [
+            [
+                str(row.get("finding_uuid", "")),
+                str(row.get("scan_result_uuid", "")),
+            ]
+            for row in shown
+        ]
+        if len(analysis.unmatched_labels) > MAX_REPO_ROWS:
+            elements.append(
+                Paragraph(
+                    f"Showing {len(shown)} of {len(analysis.unmatched_labels)} "
+                    "unmatched label rows.",
+                    styles["body"],
+                )
+            )
+        elements.append(
+            _branded_table(
+                ["finding_uuid", "scan_result_uuid"],
+                rows,
+                [page_w * 0.50, page_w * 0.50],
             )
         )
     return elements
