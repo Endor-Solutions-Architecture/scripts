@@ -1,6 +1,26 @@
 # Block Mode Readiness Report
 
-Produces an emailable warn-to-block readiness pack for any Endor Labs tenant: a branded PDF plus CSVs, scoped by **project tags** on the rollout set. Use it to answer whether a tagged project set is ready to move action-policy PR checks from warn to block.
+A **warn-to-block rollout** report for Endor Labs PR action policies (SCA, SAST, secrets, and anything else on the check). While policies are in **warn**, nothing stops a merge. Before you flip them to **block**, you need evidence from the actual PR checks on the repos in the rollout — not tenant-wide dashboards, and not a list of warned scans with no denominator.
+
+This tool is a fit when you are rolling policies out to a **tagged project set** (the same tags used to enable repos and bind action policies) and you need a repeatable pack for a working session:
+
+| Question | Where it lands |
+|---|---|
+| If we had been in block, what share of PR checks would have failed? | Section A — would-have-blocked %, with **all** PR checks as the denominator (including clean ones) |
+| Is the friction everywhere, or a handful of repos? | Section B — concentration, including tagged repos with **zero** warns |
+| Which PRs and findings should security label as true vs false positive? | `fp_worksheet.csv` — PR, finding, and scan links; blank `fp` / `reason` columns to fill and return |
+| Are developers acting on warns (later scan, fewer findings)? | Section D — rescan trajectories (`acted` / `still_open` / `single_scan`). Not merge status. |
+| What is the false-positive rate once labels come back? | Gate 1 in the PDF, from `--labels` on the returned worksheet |
+
+Output is a branded PDF (meeting artifact) plus CSVs (the work). Re-run weekly: ScanResults last **21 days** in the API, so snapshots are the durable history of a rollout longer than that.
+
+Scope is **project tags**, never the whole tenant as a silent fallback. If you do not yet know which tags define the rollout, list them first:
+
+```bash
+python list_project_tags.py -n example-corp
+```
+
+That prints a CSV of unique `Project.meta.tags` (traverses child namespaces) to stdout. Pick the rollout tag(s), then pass them as `--project-tags`.
 
 ## Prerequisites
 
@@ -182,7 +202,7 @@ Blocked until `--labels` supplies filled `fp` values on the returned worksheet. 
 
 ### Scope caveats
 
-- **Project tags**, not finding tags—the rollout set is however repos are tagged for enablement and action policies.
+- **Project tags**, not finding tags—the rollout set is however repos are tagged for enablement and action policies. Discover tags with `python list_project_tags.py -n <namespace>`.
 - **Warn mode** does not imply merge friction; developers can merge while checks warn.
 - **21-day API retention**—long rollouts depend on weekly snapshots and decision-week `--snapshot-dir` union.
 
