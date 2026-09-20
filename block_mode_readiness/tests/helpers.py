@@ -83,3 +83,97 @@ def make_snapshot(**kwargs) -> Snapshot:
     )
     data.update(kwargs)
     return Snapshot(**data)
+
+
+def full_sample_snapshot() -> Snapshot:
+    findings = {
+        "f-vuln": make_finding(
+            uuid="f-vuln",
+            violation_type="Vulnerability",
+            severity="CRITICAL",
+        ),
+        "f-sast": make_finding(
+            uuid="f-sast",
+            violation_type="SAST",
+            severity="HIGH",
+        ),
+        "f-sec": make_finding(
+            uuid="f-sec",
+            violation_type="Secrets",
+            severity="HIGH",
+        ),
+        "f-ai": make_finding(
+            uuid="f-ai",
+            violation_type="AI SAST",
+            severity="MEDIUM",
+        ),
+        "f-vuln2": make_finding(
+            uuid="f-vuln2",
+            violation_type="Vulnerability",
+            severity="HIGH",
+        ),
+        "f-vuln3": make_finding(
+            uuid="f-vuln3",
+            violation_type="Vulnerability",
+            severity="HIGH",
+        ),
+    }
+    scans = {
+        "s1": make_scan(
+            uuid="s1",
+            create_time="2026-03-01T12:00:00Z",
+            pr_number="10",
+            outcome="warn",
+            warning_finding_ids=["f-vuln", "f-sast"],
+        ),
+        "s2": make_scan(
+            uuid="s2",
+            create_time="2026-03-05T12:00:00Z",
+            pr_number="10",
+            outcome="warn",
+            warning_finding_ids=["f-vuln"],
+        ),
+        "s3": make_scan(
+            uuid="s3",
+            create_time="2026-03-02T12:00:00Z",
+            pr_number="11",
+            outcome="warn",
+            warning_finding_ids=["f-sec"],
+        ),
+        "s4": make_scan(
+            uuid="s4",
+            create_time="2026-03-06T12:00:00Z",
+            pr_number="11",
+            outcome="warn",
+            warning_finding_ids=["f-sec"],
+        ),
+        "s5": make_scan(
+            uuid="s5",
+            create_time="2026-03-20T12:00:00Z",
+            pr_number="12",
+            outcome="warn",
+            warning_finding_ids=["f-ai"],
+        ),
+        "s6": make_scan(
+            uuid="s6",
+            create_time="2026-03-03T12:00:00Z",
+            pr_number="13",
+            outcome="warn",
+            warning_finding_ids=["f-vuln2", "f-vuln3"],
+        ),
+        "s7": make_scan(
+            uuid="s7",
+            create_time="2026-03-08T12:00:00Z",
+            pr_number="13",
+            outcome="clean",
+            warning_finding_ids=[],
+        ),
+        "s8": make_scan(
+            uuid="s8",
+            create_time="2026-03-04T12:00:00Z",
+            pr_number="14",
+            outcome="clean",
+            warning_finding_ids=[],
+        ),
+    }
+    return make_snapshot(findings=findings, scans=scans)
