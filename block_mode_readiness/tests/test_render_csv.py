@@ -3,6 +3,8 @@ from __future__ import annotations
 import csv
 import json
 
+import pytest
+
 from analyze import analyze
 from render_csv import read_labels_csv, write_csvs, write_summary
 from helpers import full_sample_snapshot
@@ -38,3 +40,43 @@ def test_read_labels_csv(tmp_path):
     p.write_text("finding_uuid,scan_result_uuid,fp,reason\nf1,s1,yes,noise\n", encoding="utf-8")
     rows = read_labels_csv(p)
     assert rows[0]["fp"] == "yes"
+
+
+def test_read_labels_csv_accepts_utf8_bom(tmp_path):
+    p = tmp_path / "labels.csv"
+    p.write_text(
+        "finding_uuid,scan_result_uuid,fp,reason\nf1,s1,yes,noise\n",
+        encoding="utf-8-sig",
+    )
+
+    rows = read_labels_csv(p)
+
+    assert rows[0]["finding_uuid"] == "f1"
+
+
+@pytest.mark.parametrize(
+    "second_label",
+    [
+        "f1,s1,yes,noise",
+        "f1,s1,no,real finding",
+    ],
+)
+def test_read_labels_csv_rejects_duplicate_join_keys(tmp_path, second_label):
+    p = tmp_path / "labels.csv"
+    p.write_text(
+        "finding_uuid,scan_result_uuid,fp,reason\n"
+        "f1,s1,yes,noise\n"
+        f"{second_label}\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="duplicate"):
+        read_labels_csv(p)
+
+
+def test_read_labels_csv_requires_join_and_label_columns(tmp_path):
+    p = tmp_path / "labels.csv"
+    p.write_text("finding_uuid,fp\nf1,yes\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="required columns"):
+        read_labels_csv(p)

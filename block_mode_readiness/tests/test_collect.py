@@ -117,6 +117,38 @@ def test_collect_retries_then_raises():
     assert n["ScanResult"] == 2
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {"list": {}},
+        {"list": {"objects": {}}},
+        {"list": {"objects": ["not-an-object"]}},
+    ],
+)
+def test_collect_rejects_malformed_scan_list_payload(payload):
+    attempts = 0
+
+    def runner(args, namespace, timeout=120):
+        nonlocal attempts
+        kind = args[args.index("-r") + 1]
+        if kind == "Project":
+            return _list([_tagged_project()])
+        if kind == "Policy":
+            return _list([])
+        if kind == "ScanResult":
+            attempts += 1
+            return payload
+        raise AssertionError(kind)
+
+    with pytest.raises(CollectError, match=r"list\.objects") as exc:
+        collect("example-corp", ["rollout-wave-1"], 21, runner=runner)
+
+    assert attempts == 2
+    assert exc.value.command is not None
+    assert "ScanResult" in exc.value.command
+
+
 def _tagged_project():
     return {
         "uuid": "p-alpha",
@@ -162,6 +194,46 @@ def test_empty_project_selector_keeps_policy():
 
     snap = collect("example-corp", ["rollout-wave-1"], 21, runner=runner)
     assert [p.uuid for p in snap.policies] == ["pol-empty"]
+
+
+def test_policy_excluded_from_every_selected_project_is_not_listed():
+    def runner(args, namespace, timeout=120):
+        kind = args[args.index("-r") + 1]
+        if kind == "Project":
+            return _list([_tagged_project()])
+        if kind == "Policy":
+            assert "spec.project_exceptions" in args[args.index("--field-mask") + 1]
+            return _list(
+                [
+                    {
+                        "uuid": "pol-excluded",
+                        "meta": {"name": "Excluded everywhere"},
+                        "spec": {
+                            "policy_type": "POLICY_TYPE_ADMISSION",
+                            "disable": False,
+                            "project_selector": ["rollout-wave-1"],
+                            "project_exceptions": ["p-alpha"],
+                        },
+                    },
+                    {
+                        "uuid": "pol-applies",
+                        "meta": {"name": "Still applies"},
+                        "spec": {
+                            "policy_type": "POLICY_TYPE_ADMISSION",
+                            "disable": False,
+                            "project_selector": ["rollout-wave-1"],
+                            "project_exceptions": [],
+                        },
+                    },
+                ]
+            )
+        if kind == "ScanResult":
+            return _list([])
+        raise AssertionError(kind)
+
+    snap = collect("example-corp", ["rollout-wave-1"], 21, runner=runner)
+
+    assert [policy.uuid for policy in snap.policies] == ["pol-applies"]
 
 
 def test_finding_maps_fields_and_package():
@@ -239,6 +311,57 @@ def test_finding_maps_fields_and_package():
     assert snap.projects["p-alpha"].base_url == "https://github.com/org/alpha"
     assert snap.meta.customer == "example-corp"
     assert snap.meta.project_count == 1
+
+
+def test_collect_fails_when_finding_lookup_omits_requested_uuid():
+    def runner(args, namespace, timeout=120):
+        kind = args[args.index("-r") + 1]
+        if kind == "Project":
+            return _list([_tagged_project()])
+        if kind == "Policy":
+            return _list([])
+        if kind == "ScanResult":
+            return _list(
+                [
+                    {
+                        "uuid": "s-warn",
+                        "meta": {
+                            "create_time": "2026-03-01T00:00:00Z",
+                            "parent_uuid": "p-alpha",
+                            "tags": ["pr=1"],
+                        },
+                        "tenant_meta": {"namespace": "example-corp"},
+                        "context": {"tags": []},
+                        "spec": {
+                            "status": "ok",
+                            "warning_findings": ["f-returned", "f-missing"],
+                            "blocking_findings": [],
+                        },
+                    }
+                ]
+            )
+        if kind == "Finding":
+            return _list(
+                [
+                    {
+                        "uuid": "f-returned",
+                        "meta": {"name": "rule", "description": "returned"},
+                        "tenant_meta": {"namespace": "example-corp"},
+                        "spec": {
+                            "level": "FINDING_LEVEL_HIGH",
+                            "finding_categories": ["FINDING_CATEGORY_SAST"],
+                            "finding_tags": [],
+                        },
+                    }
+                ]
+            )
+        raise AssertionError(kind)
+
+    with pytest.raises(CollectError, match="f-missing") as exc:
+        collect("example-corp", ["rollout-wave-1"], 21, runner=runner)
+
+    assert exc.value.command is not None
+    assert "Finding" in exc.value.command
 
 
 def test_scan_query_uses_ci_timeout_and_chunk_size():

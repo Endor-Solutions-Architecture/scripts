@@ -107,6 +107,32 @@ def test_collect_does_not_mkdir_on_error(tmp_path, monkeypatch):
     assert not (tmp_path / "generated_reports").exists()
 
 
+def test_collect_reserves_unique_output_directory(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "collect", lambda *a, **k: full_sample_snapshot())
+    monkeypatch.setattr(cli, "_timestamp", lambda: "20260321T180000")
+    argv = [
+        "collect",
+        "-n",
+        "example-corp",
+        "--project-tags",
+        "rollout-wave-1",
+    ]
+
+    assert cli.main(argv) == 0
+    assert cli.main(argv) == 0
+
+    root = (
+        tmp_path
+        / "generated_reports"
+        / "block_mode_readiness"
+        / "example-corp"
+    )
+    outputs = sorted(path.name for path in root.iterdir())
+    assert outputs == ["20260321T180000", "20260321T180000-1"]
+    assert all((root / name / "snapshot.json").is_file() for name in outputs)
+
+
 def test_collect_error_prints_command(monkeypatch, capsys):
     def boom(*a, **k):
         from collect import CollectError
@@ -153,6 +179,35 @@ def test_report_uses_labels(tmp_path):
     assert rc == 0
     summary = json.loads((snap_dir / "summary.json").read_text(encoding="utf-8"))
     assert summary["gate1_per_finding"] == 100.0
+
+
+def test_report_missing_labels_file_exits_cleanly(tmp_path, capsys):
+    snap_dir = tmp_path / "20260321T180000"
+    snap_dir.mkdir()
+    save_snapshot(full_sample_snapshot(), snap_dir)
+    missing = tmp_path / "missing-labels.csv"
+
+    rc = cli.main(
+        ["report", "--snapshot", str(snap_dir), "--labels", str(missing)]
+    )
+
+    assert rc == 1
+    assert str(missing) in capsys.readouterr().err
+
+
+def test_report_invalid_labels_file_exits_cleanly(tmp_path, capsys):
+    snap_dir = tmp_path / "20260321T180000"
+    snap_dir.mkdir()
+    save_snapshot(full_sample_snapshot(), snap_dir)
+    labels = tmp_path / "labels.csv"
+    labels.write_text("finding_uuid,fp\nf1,yes\n", encoding="utf-8")
+
+    rc = cli.main(
+        ["report", "--snapshot", str(snap_dir), "--labels", str(labels)]
+    )
+
+    assert rc == 1
+    assert "required columns" in capsys.readouterr().err
 
 
 def test_run_writes_snapshot_and_report(tmp_path, monkeypatch):

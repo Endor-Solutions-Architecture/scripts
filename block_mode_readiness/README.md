@@ -52,7 +52,7 @@ python main.py report \
   --snapshot-dir generated_reports/block_mode_readiness/example-corp
 ```
 
-This writes a new `union-<timestamp>/` folder under that directory (merged PDF + CSVs). It does **not** modify existing collect folders.
+This writes a new `union-<timestamp>/` folder under that directory (unioned PDF + CSVs). It does **not** modify existing collect folders.
 
 **This week only:** `run` (or `collect` then `report --snapshot`) uses a single snapshot—fine for a spot check, not for the full rollout story.
 

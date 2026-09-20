@@ -43,6 +43,19 @@ def test_mark_date_split():
     assert split.before_warn == 5
     assert split.after_total == 1
     assert split.after_warn == 1
+    assert split.before_block == 0
+    assert split.after_block == 0
+
+
+def test_mark_date_split_counts_blocks():
+    snap = full_sample_snapshot()
+    snap.scans["s8"].outcome = "block"
+    snap.scans["s8"].blocking_finding_ids = ["f-block"]
+
+    split = analyze(snap).mark_splits[0]
+
+    assert split.before_block == 1
+    assert split.after_block == 0
 
 
 def test_fp_rows_blank_and_clean_scans_in_pr_checks():
@@ -81,6 +94,7 @@ def test_gate1_mixed_yes_no():
     ]
     a = analyze(snap, labels=labels)
     assert a.gate1_per_finding == 50.0
+    assert a.gate1_per_finding_counts == (1, 2)
 
 
 def test_gate1_per_pr_and_by_type():
@@ -94,7 +108,20 @@ def test_gate1_per_pr_and_by_type():
     ]
     a = analyze(snap, labels=labels)
     assert a.gate1_per_pr == 0.0
+    assert a.gate1_per_pr_counts == (0, 1)
     assert a.gate1_by_type == {"SAST": 0.0, "Vulnerability": 100.0}
+    assert a.gate1_by_type_counts == {
+        "SAST": (0, 1),
+        "Vulnerability": (1, 1),
+    }
+    assert a.gate1_by_type_per_pr == {
+        "SAST": 0.0,
+        "Vulnerability": 100.0,
+    }
+    assert a.gate1_by_type_per_pr_counts == {
+        "SAST": (0, 1),
+        "Vulnerability": (1, 1),
+    }
 
 
 def test_gate1_unsure_excluded_and_unmatched_preserves_rows():

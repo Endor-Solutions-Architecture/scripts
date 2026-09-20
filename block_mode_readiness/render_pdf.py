@@ -4,6 +4,7 @@ import os
 import tempfile
 from collections import Counter
 from datetime import datetime
+from html import escape
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -51,8 +52,21 @@ def _fmt_pct(value: Optional[float]) -> str:
 
 def _fmt_pct_denom(value: Optional[float], n: int, d: int) -> str:
     if value is None:
-        return "n/a"
+        return f"n/a ({n} / {d})"
     return f"{value:.1f}% ({n} / {d})"
+
+
+def _safe(value: Any) -> str:
+    return escape("" if value is None else str(value))
+
+
+def _mark_rate(warns: int, total: int, blocks: int) -> str:
+    rate = None if total == 0 else round(100.0 * warns / total, 1)
+    text = _fmt_pct_denom(rate, warns, total)
+    if blocks:
+        noun = "block" if blocks == 1 else "blocks"
+        text += f"; {blocks} {noun}"
+    return text
 
 
 def _fmt_generated_at(value: str) -> str:
@@ -95,8 +109,8 @@ def _summary_cards(
     for label, value in items:
         inner = Table(
             [
-                [Paragraph(label, styles["card_label"])],
-                [Paragraph(value, styles["card_value"])],
+                [Paragraph(_safe(label), styles["card_label"])],
+                [Paragraph(_safe(value), styles["card_value"])],
             ],
             colWidths=[col_w - 8],
         )
@@ -128,8 +142,18 @@ def _summary_cards(
     return row
 
 
-def _branded_table(headers: List[str], rows: List[List[str]], col_widths: List[float]):
-    data = [headers] + rows
+def _branded_table(
+    headers: List[str],
+    rows: List[List[str]],
+    col_widths: List[float],
+    styles: Dict[str, Any],
+):
+    data = [
+        [Paragraph(_safe(cell), styles["cell_header"]) for cell in headers]
+    ] + [
+        [Paragraph(_safe(cell), styles["cell"]) for cell in row]
+        for row in rows
+    ]
     table = Table(data, colWidths=col_widths, repeatRows=1)
     table.setStyle(branded_table_style(len(data)))
     return table
@@ -210,25 +234,31 @@ def _cover(analysis: Analysis, snapshot: Snapshot, styles: Dict[str, Any], page_
     meta_rows = [
         [
             Paragraph("Prepared for", styles["meta_label"]),
-            Paragraph(snapshot.meta.customer or snapshot.meta.namespace, styles["meta_value"]),
+            Paragraph(
+                _safe(snapshot.meta.customer or snapshot.meta.namespace),
+                styles["meta_value"],
+            ),
             Paragraph("Prepared by", styles["meta_label"]),
-            Paragraph(PREPARED_BY, styles["meta_value"]),
+            Paragraph(_safe(PREPARED_BY), styles["meta_value"]),
         ],
         [
             Paragraph("Namespace", styles["meta_label"]),
-            Paragraph(snapshot.meta.namespace, styles["meta_value"]),
+            Paragraph(_safe(snapshot.meta.namespace), styles["meta_value"]),
             Paragraph("Project tags", styles["meta_label"]),
-            Paragraph(tags, styles["meta_value"]),
+            Paragraph(_safe(tags), styles["meta_value"]),
         ],
         [
             Paragraph("Window", styles["meta_label"]),
-            Paragraph(window, styles["meta_value"]),
+            Paragraph(_safe(window), styles["meta_value"]),
             Paragraph("Generated at", styles["meta_label"]),
-            Paragraph(_fmt_generated_at(snapshot.meta.generated_at), styles["meta_value"]),
+            Paragraph(
+                _safe(_fmt_generated_at(snapshot.meta.generated_at)),
+                styles["meta_value"],
+            ),
         ],
         [
             Paragraph("Decision date", styles["meta_label"]),
-            Paragraph(decision, styles["meta_value"]),
+            Paragraph(_safe(decision), styles["meta_value"]),
             Paragraph("Lookback requested", styles["meta_label"]),
             Paragraph(f"{snapshot.meta.days} days", styles["meta_value"]),
         ],
@@ -254,7 +284,7 @@ def _cover(analysis: Analysis, snapshot: Snapshot, styles: Dict[str, Any], page_
             elements.append(Spacer(1, 12))
             elements.append(
                 Paragraph(
-                    f"Action policies that apply to this rollout: {names}.",
+                    f"Action policies that apply to this rollout: {_safe(names)}.",
                     styles["body"],
                 )
             )
@@ -331,16 +361,24 @@ def _caveats(analysis: Analysis, snapshot: Snapshot, styles: Dict[str, Any]) -> 
             "Collect weekly so history outlives API retention."
         )
     history = (
-        f" History starts at {analysis.history_starts_at}, the first scan date "
+        f" History starts at {_safe(analysis.history_starts_at)}, the first scan date "
         "in the available snapshots, not at an assumed rollout start."
     )
     elements.append(Paragraph(pack + history, styles["body"]))
-    if analysis.gate1_per_finding is None:
+    if analysis.gate1_per_finding_counts is None:
         elements.append(
             Paragraph(
                 "The false-positive rate is blocked on returned labels. "
                 f"Sample size: {len(analysis.fp_rows)} warning findings in "
                 "fp_worksheet.csv.",
+                styles["body"],
+            )
+        )
+    elif analysis.gate1_per_finding is None:
+        elements.append(
+            Paragraph(
+                "Returned labels contained 0 usable yes/no values, so the "
+                "false-positive rate remains n/a (0 / 0 labeled findings).",
                 styles["body"],
             )
         )
@@ -419,6 +457,7 @@ def _section_a(
                 ["Violation type", "Checks with type", "Rate"],
                 type_rows,
                 [page_w * 0.40, page_w * 0.30, page_w * 0.30],
+                styles,
             )
         )
         elements.append(Spacer(1, 10))
@@ -428,17 +467,26 @@ def _section_a(
             [
                 split.key,
                 split.date,
-                f"{split.before_warn} / {split.before_total}",
-                f"{split.after_warn} / {split.after_total}",
+                _mark_rate(
+                    split.before_warn,
+                    split.before_total,
+                    split.before_block,
+                ),
+                _mark_rate(
+                    split.after_warn,
+                    split.after_total,
+                    split.after_block,
+                ),
             ]
         )
     if mark_rows:
         elements.append(Paragraph("Before / after mark-dates", styles["subtitle"]))
         elements.append(
             _branded_table(
-                ["Mark", "Date", "Before (warn / total)", "After (warn / total)"],
+                ["Mark", "Date", "Before warn rate", "After warn rate"],
                 mark_rows,
                 [page_w * 0.20, page_w * 0.20, page_w * 0.30, page_w * 0.30],
+                styles,
             )
         )
         elements.append(Spacer(1, 10))
@@ -451,12 +499,16 @@ def _section_a(
 
 def _section_b(analysis: Analysis, styles: Dict[str, Any], page_w: float) -> List[Any]:
     n = len(analysis.repos)
+    top_k = min(5, n)
+    top_warns = sum(row.warns for row in analysis.repos[:top_k])
+    total_warns = sum(row.warns for row in analysis.repos)
     elements: List[Any] = [
         _section_header("B — Concentration", styles),
         Paragraph(
             f"{analysis.zero_warn_repos} of {n} tagged projects had zero warns. "
-            f"The top handful account for {_fmt_pct(analysis.top_repo_warn_share)} "
-            "of warns.",
+            f"Top {top_k} of {n} tagged projects account for "
+            f"{top_warns} of {total_warns} warns "
+            f"({_fmt_pct(analysis.top_repo_warn_share)}).",
             styles["body"],
         ),
     ]
@@ -470,7 +522,12 @@ def _section_b(analysis: Analysis, styles: Dict[str, Any], page_w: float) -> Lis
             )
         )
     rows = [
-        [row.project_name, str(row.checks), str(row.warns), _fmt_pct(row.rate)]
+        [
+            row.project_name,
+            str(row.checks),
+            str(row.warns),
+            _fmt_pct_denom(row.rate, row.warns, row.checks),
+        ]
         for row in shown
     ]
     if rows:
@@ -479,6 +536,7 @@ def _section_b(analysis: Analysis, styles: Dict[str, Any], page_w: float) -> Lis
                 ["Repository", "Checks", "Warns", "Rate"],
                 rows,
                 [page_w * 0.46, page_w * 0.18, page_w * 0.18, page_w * 0.18],
+                styles,
             )
         )
     return elements
@@ -506,10 +564,15 @@ def _section_c(analysis: Analysis, styles: Dict[str, Any], page_w: float) -> Lis
         col_w = page_w / 6
         elements.append(Paragraph("Warning findings by type and severity", styles["subtitle"]))
         elements.append(
-            _branded_table(headers, rows, [col_w * 1.4] + [col_w * 0.92] * 5)
+            _branded_table(
+                headers,
+                rows,
+                [col_w * 1.4] + [col_w * 0.92] * 5,
+                styles,
+            )
         )
         elements.append(Spacer(1, 10))
-    if analysis.gate1_per_finding is None:
+    if analysis.gate1_per_finding_counts is None:
         elements.append(
             Paragraph(
                 "Gate 1 is awaiting returned labels. The false-positive rate is "
@@ -518,19 +581,41 @@ def _section_c(analysis: Analysis, styles: Dict[str, Any], page_w: float) -> Lis
             )
         )
     else:
+        finding_fp, finding_labeled = analysis.gate1_per_finding_counts or (0, 0)
+        pr_fp, pr_labeled = analysis.gate1_per_pr_counts or (0, 0)
         elements.append(
             Paragraph(
-                f"Gate 1 per finding: {_fmt_pct(analysis.gate1_per_finding)}. "
-                f"Gate 1 per PR: {_fmt_pct(analysis.gate1_per_pr)}.",
+                f"Gate 1 per finding: {_fmt_pct(analysis.gate1_per_finding)} "
+                f"({finding_fp} / {finding_labeled} labeled findings). "
+                f"Gate 1 per PR: {_fmt_pct(analysis.gate1_per_pr)} "
+                f"({pr_fp} / {pr_labeled} labeled PRs).",
                 styles["body"],
             )
         )
         if analysis.gate1_by_type:
-            type_bits = ", ".join(
-                f"{name} {_fmt_pct(rate)}"
-                for name, rate in analysis.gate1_by_type.items()
+            type_bits = []
+            for name, rate in analysis.gate1_by_type.items():
+                finding_counts = (analysis.gate1_by_type_counts or {}).get(
+                    name,
+                    (0, 0),
+                )
+                pr_rate = (analysis.gate1_by_type_per_pr or {}).get(name)
+                pr_counts = (analysis.gate1_by_type_per_pr_counts or {}).get(
+                    name,
+                    (0, 0),
+                )
+                type_bits.append(
+                    f"{_safe(name)} {_fmt_pct(rate)} "
+                    f"({finding_counts[0]} / {finding_counts[1]} labeled findings), "
+                    f"per PR {_fmt_pct(pr_rate)} "
+                    f"({pr_counts[0]} / {pr_counts[1]} labeled PRs)"
+                )
+            elements.append(
+                Paragraph(
+                    f"By violation type: {'; '.join(type_bits)}.",
+                    styles["body"],
+                )
             )
-            elements.append(Paragraph(f"By violation type: {type_bits}.", styles["body"]))
     if analysis.unmatched_labels:
         elements.append(
             Paragraph(
@@ -561,6 +646,7 @@ def _section_c(analysis: Analysis, styles: Dict[str, Any], page_w: float) -> Lis
                 ["finding_uuid", "scan_result_uuid"],
                 rows,
                 [page_w * 0.50, page_w * 0.50],
+                styles,
             )
         )
     return elements
@@ -621,6 +707,7 @@ def _section_d(analysis: Analysis, styles: Dict[str, Any], page_w: float) -> Lis
                 ["Repository", "PR", "Sequence", "Classification"],
                 rows,
                 [page_w * 0.34, page_w * 0.12, page_w * 0.28, page_w * 0.26],
+                styles,
             )
         )
     return elements
@@ -643,7 +730,8 @@ def _next_steps(analysis: Analysis, snapshot: Snapshot, styles: Dict[str, Any]) 
     if snapshot.meta.decision_date:
         elements.append(
             Paragraph(
-                f"This pack informs the decision on {snapshot.meta.decision_date}.",
+                f"This pack informs the decision on "
+                f"{_safe(snapshot.meta.decision_date)}.",
                 styles["body"],
             )
         )
@@ -657,8 +745,9 @@ def _next_steps(analysis: Analysis, snapshot: Snapshot, styles: Dict[str, Any]) 
         )
     elements.append(
         Paragraph(
-            f"Window covered: {analysis.window_start} to {analysis.window_end}. "
-            f"History starts at {analysis.history_starts_at}.",
+            f"Window covered: {_safe(analysis.window_start)} to "
+            f"{_safe(analysis.window_end)}. History starts at "
+            f"{_safe(analysis.history_starts_at)}.",
             styles["body"],
         )
     )

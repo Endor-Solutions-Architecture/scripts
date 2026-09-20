@@ -21,7 +21,8 @@ PROJECT_FIELD_MASK = (
     "uuid,meta.tags,tenant_meta.namespace,spec.git.full_name,spec.git.http_clone_url"
 )
 POLICY_FIELD_MASK = (
-    "uuid,meta.name,spec.project_selector,spec.disable,spec.policy_type"
+    "uuid,meta.name,spec.project_selector,spec.project_exceptions,"
+    "spec.disable,spec.policy_type"
 )
 SCAN_FIELD_MASK = (
     "uuid,meta.create_time,meta.parent_uuid,meta.tags,tenant_meta.namespace,"
@@ -56,8 +57,36 @@ def _cutoff_iso(days: int) -> str:
     return when.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _objects(response: Dict[str, Any]) -> List[Dict[str, Any]]:
-    return ((response or {}).get("list") or {}).get("objects") or []
+def _objects(response: Any, command: List[str]) -> List[Dict[str, Any]]:
+    if not isinstance(response, dict):
+        raise CollectError(
+            "malformed list.objects response: top-level value is not an object",
+            command=command,
+        )
+    list_value = response.get("list")
+    if not isinstance(list_value, dict):
+        raise CollectError(
+            "malformed list.objects response: list is missing or not an object",
+            command=command,
+        )
+    if "objects" not in list_value:
+        raise CollectError(
+            "malformed list.objects response: objects is missing",
+            command=command,
+        )
+    objects = list_value["objects"]
+    if not isinstance(objects, list):
+        raise CollectError(
+            "malformed list.objects response: objects is not a list",
+            command=command,
+        )
+    for index, obj in enumerate(objects):
+        if not isinstance(obj, dict):
+            raise CollectError(
+                f"malformed list.objects response: item {index} is not an object",
+                command=command,
+            )
+    return objects
 
 
 def _in_clause(field: str, uuids: Iterable[str]) -> str:
@@ -108,15 +137,18 @@ def _package_from_affected(affected: Any) -> str:
     return ""
 
 
-def _policy_applies(obj: Dict[str, Any], tags: List[str]) -> bool:
+def _policy_applies(obj: Dict[str, Any], projects: Iterable[Project]) -> bool:
     spec = obj.get("spec") or {}
     if spec.get("disable"):
         return False
-    selector = spec.get("project_selector") or []
-    if not selector:
-        return True
-    tag_set = set(tags)
-    return any(tag in tag_set for tag in selector)
+    selector = set(spec.get("project_selector") or [])
+    exceptions = set(spec.get("project_exceptions") or [])
+    for project in projects:
+        if project.uuid in exceptions:
+            continue
+        if not selector or selector.intersection(project.tags):
+            return True
+    return False
 
 
 def _project_from_obj(obj: Dict[str, Any]) -> Project:
@@ -214,27 +246,31 @@ def _call_runner(
     args: List[str],
     namespace: str,
     timeout: int = 120,
-) -> Dict[str, Any]:
+    validator: Optional[Callable[[Any, List[str]], Any]] = None,
+) -> Any:
     last: Optional[BaseException] = None
+    command = _full_command(args, namespace)
     for attempt in range(2):
         try:
             result = runner(args, namespace, timeout)
             if result is None:
                 raise CollectError(
                     "endorctl returned no data",
-                    command=_full_command(args, namespace),
+                    command=command,
                 )
+            if validator is not None:
+                return validator(result, command)
             return result
         except CollectError as exc:
             last = exc
             if attempt == 1:
                 raise
         except Exception as exc:
-            last = CollectError(str(exc), command=_full_command(args, namespace))
+            last = CollectError(str(exc), command=command)
             if attempt == 1:
                 raise last from exc
     if last is None:
-        raise CollectError("endorctl query failed", command=_full_command(args, namespace))
+        raise CollectError("endorctl query failed", command=command)
     if isinstance(last, CollectError):
         raise last
     raise CollectError(str(last), command=_full_command(args, namespace)) from last
@@ -247,6 +283,7 @@ def _list_kind(
     field_mask: str,
     namespace: str,
     timeout: int = 120,
+    required_uuids: Optional[Iterable[str]] = None,
 ) -> List[Dict[str, Any]]:
     args = [
         "api",
@@ -260,7 +297,31 @@ def _list_kind(
         "--list-all",
         "--traverse",
     ]
-    return _objects(_call_runner(runner, args, namespace, timeout))
+    required = set(required_uuids or [])
+
+    def validate(response: Any, command: List[str]) -> List[Dict[str, Any]]:
+        objects = _objects(response, command)
+        if required:
+            returned = {
+                obj.get("uuid")
+                for obj in objects
+                if isinstance(obj.get("uuid"), str) and obj.get("uuid")
+            }
+            missing = sorted(required - returned)
+            if missing:
+                raise CollectError(
+                    "Finding response missing requested UUIDs: " + ", ".join(missing),
+                    command=command,
+                )
+        return objects
+
+    return _call_runner(
+        runner,
+        args,
+        namespace,
+        timeout,
+        validator=validate,
+    )
 
 
 def collect(
@@ -299,7 +360,7 @@ def collect(
         POLICY_FIELD_MASK,
         namespace,
     ):
-        if _policy_applies(obj, project_tags):
+        if _policy_applies(obj, projects.values()):
             policies.append(_policy_from_obj(obj))
 
     cutoff = _cutoff_iso(days)
@@ -329,7 +390,15 @@ def collect(
             "-t",
             "300s",
         ]
-        scan_objs.extend(_objects(_call_runner(query, args, namespace, 360)))
+        scan_objs.extend(
+            _call_runner(
+                query,
+                args,
+                namespace,
+                360,
+                validator=_objects,
+            )
+        )
 
     scans: Dict[str, Scan] = {}
     ci_runs_dropped_no_pr = 0
@@ -357,6 +426,7 @@ def collect(
             _in_clause("uuid", chunk),
             FINDING_FIELD_MASK,
             namespace,
+            required_uuids=chunk,
         ):
             uuid = obj.get("uuid") or ""
             if uuid and uuid not in findings:

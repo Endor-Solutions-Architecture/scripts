@@ -60,6 +60,17 @@ TRAJECTORY_FIELDS = [
     "last_scan_result_url",
 ]
 
+LABEL_REQUIRED_FIELDS = {
+    "finding_uuid",
+    "scan_result_uuid",
+    "fp",
+    "reason",
+}
+
+
+class LabelError(ValueError):
+    pass
+
 
 def _write_csv(path: Path, fieldnames: List[str], rows: Iterable[Dict[str, Any]]) -> None:
     with path.open("w", newline="", encoding="utf-8") as fh:
@@ -107,8 +118,13 @@ def write_summary(analysis: Analysis, snapshot: Snapshot, directory: Path) -> No
         "top_repo_warn_share": analysis.top_repo_warn_share,
         "policy_fallback": analysis.policy_fallback,
         "gate1_per_finding": analysis.gate1_per_finding,
+        "gate1_per_finding_counts": analysis.gate1_per_finding_counts,
         "gate1_per_pr": analysis.gate1_per_pr,
+        "gate1_per_pr_counts": analysis.gate1_per_pr_counts,
         "gate1_by_type": analysis.gate1_by_type,
+        "gate1_by_type_counts": analysis.gate1_by_type_counts,
+        "gate1_by_type_per_pr": analysis.gate1_by_type_per_pr,
+        "gate1_by_type_per_pr_counts": analysis.gate1_by_type_per_pr_counts,
         "unmatched_labels": analysis.unmatched_labels,
         "by_violation_type": [asdict(item) for item in analysis.by_violation_type],
         "mark_splits": [asdict(item) for item in analysis.mark_splits],
@@ -121,5 +137,50 @@ def write_summary(analysis: Analysis, snapshot: Snapshot, directory: Path) -> No
 
 
 def read_labels_csv(path: Path) -> List[Dict[str, str]]:
-    with path.open(newline="", encoding="utf-8") as fh:
-        return list(csv.DictReader(fh))
+    path = Path(path)
+    try:
+        with path.open(newline="", encoding="utf-8-sig") as fh:
+            reader = csv.DictReader(fh, strict=True)
+            fieldnames = reader.fieldnames
+            if not fieldnames:
+                raise LabelError(f"labels file has no header: {path}")
+            if len(fieldnames) != len(set(fieldnames)):
+                raise LabelError(f"labels file has duplicate columns: {path}")
+            missing = sorted(LABEL_REQUIRED_FIELDS - set(fieldnames))
+            if missing:
+                raise LabelError(
+                    "labels file is missing required columns "
+                    + ", ".join(missing)
+                    + f": {path}"
+                )
+
+            rows: List[Dict[str, str]] = []
+            seen = set()
+            for row_number, row in enumerate(reader, start=2):
+                if None in row or any(
+                    row.get(field) is None for field in LABEL_REQUIRED_FIELDS
+                ):
+                    raise LabelError(
+                        f"malformed labels row {row_number}: {path}"
+                    )
+                key = (
+                    str(row["finding_uuid"]).strip(),
+                    str(row["scan_result_uuid"]).strip(),
+                )
+                if not all(key):
+                    raise LabelError(
+                        f"labels row {row_number} has a blank join key: {path}"
+                    )
+                if key in seen:
+                    raise LabelError(
+                        "duplicate labels join key "
+                        f"{key[0]} + {key[1]} at row {row_number}: {path}"
+                    )
+                seen.add(key)
+                row["finding_uuid"], row["scan_result_uuid"] = key
+                rows.append(row)
+            return rows
+    except LabelError:
+        raise
+    except (OSError, UnicodeError, csv.Error) as exc:
+        raise LabelError(f"could not read labels file {path}: {exc}") from exc

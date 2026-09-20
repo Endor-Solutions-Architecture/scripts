@@ -22,8 +22,10 @@ class MarkSplit:
     date: str
     before_total: int
     before_warn: int
+    before_block: int
     after_total: int
     after_warn: int
+    after_block: int
 
 
 @dataclass
@@ -73,8 +75,13 @@ class Analysis:
     fp_rows: List[Dict[str, Any]]
     unmatched_labels: List[Dict[str, str]]
     gate1_per_finding: Optional[float]
+    gate1_per_finding_counts: Optional[Tuple[int, int]]
     gate1_per_pr: Optional[float]
+    gate1_per_pr_counts: Optional[Tuple[int, int]]
     gate1_by_type: Optional[Dict[str, Optional[float]]]
+    gate1_by_type_counts: Optional[Dict[str, Tuple[int, int]]]
+    gate1_by_type_per_pr: Optional[Dict[str, Optional[float]]]
+    gate1_by_type_per_pr_counts: Optional[Dict[str, Tuple[int, int]]]
     snapshot_count: int
     history_starts_at: str
     policy_fallback: bool
@@ -173,25 +180,33 @@ def analyze(
     for key, date in snapshot.meta.mark_dates.items():
         before_total = 0
         before_warn = 0
+        before_block = 0
         after_total = 0
         after_warn = 0
+        after_block = 0
         for scan in scans:
             if _scan_date(scan) < date:
                 before_total += 1
                 if scan.outcome == "warn":
                     before_warn += 1
+                elif scan.outcome == "block":
+                    before_block += 1
             else:
                 after_total += 1
                 if scan.outcome == "warn":
                     after_warn += 1
+                elif scan.outcome == "block":
+                    after_block += 1
         mark_splits.append(
             MarkSplit(
                 key=key,
                 date=date,
                 before_total=before_total,
                 before_warn=before_warn,
+                before_block=before_block,
                 after_total=after_total,
                 after_warn=after_warn,
+                after_block=after_block,
             )
         )
 
@@ -349,8 +364,13 @@ def analyze(
 
     unmatched_labels: List[Dict[str, str]] = []
     gate1_per_finding: Optional[float] = None
+    gate1_per_finding_counts: Optional[Tuple[int, int]] = None
     gate1_per_pr: Optional[float] = None
+    gate1_per_pr_counts: Optional[Tuple[int, int]] = None
     gate1_by_type: Optional[Dict[str, Optional[float]]] = None
+    gate1_by_type_counts: Optional[Dict[str, Tuple[int, int]]] = None
+    gate1_by_type_per_pr: Optional[Dict[str, Optional[float]]] = None
+    gate1_by_type_per_pr_counts: Optional[Dict[str, Tuple[int, int]]] = None
     if labels is not None:
         fp_index = {
             (row["finding_uuid"], row["scan_result_uuid"]): row for row in fp_rows
@@ -372,14 +392,20 @@ def analyze(
 
         yes_count = sum(1 for fp_val, _ in yes_no if fp_val == "yes")
         gate1_per_finding = pct(yes_count, len(yes_no))
+        gate1_per_finding_counts = (yes_count, len(yes_no))
 
         pr_groups: Dict[Tuple[str, str], List[str]] = defaultdict(list)
         type_yes: Dict[str, int] = defaultdict(int)
         type_total: Dict[str, int] = defaultdict(int)
+        type_pr_groups: Dict[
+            str, Dict[Tuple[str, str], List[str]]
+        ] = defaultdict(lambda: defaultdict(list))
         for fp_val, row in yes_no:
-            pr_groups[(row["project_uuid"], row["pr_url"])].append(fp_val)
+            pr_key = (row["project_uuid"], row["pr_url"])
+            pr_groups[pr_key].append(fp_val)
             vtype = row["violation_type"]
             type_total[vtype] += 1
+            type_pr_groups[vtype][pr_key].append(fp_val)
             if fp_val == "yes":
                 type_yes[vtype] += 1
 
@@ -391,10 +417,32 @@ def analyze(
             elif any(value == "no" for value in values):
                 tp_prs += 1
         gate1_per_pr = pct(fp_prs, fp_prs + tp_prs)
+        gate1_per_pr_counts = (fp_prs, fp_prs + tp_prs)
         gate1_by_type = {
             vtype: pct(type_yes[vtype], type_total[vtype])
             for vtype in sorted(type_total)
         }
+        gate1_by_type_counts = {
+            vtype: (type_yes[vtype], type_total[vtype])
+            for vtype in sorted(type_total)
+        }
+        gate1_by_type_per_pr = {}
+        gate1_by_type_per_pr_counts = {}
+        for vtype in sorted(type_pr_groups):
+            type_fp_prs = sum(
+                1
+                for values in type_pr_groups[vtype].values()
+                if all(value == "yes" for value in values)
+            )
+            type_labeled_prs = len(type_pr_groups[vtype])
+            gate1_by_type_per_pr[vtype] = pct(
+                type_fp_prs,
+                type_labeled_prs,
+            )
+            gate1_by_type_per_pr_counts[vtype] = (
+                type_fp_prs,
+                type_labeled_prs,
+            )
 
     return Analysis(
         window_start=window_start,
@@ -416,8 +464,13 @@ def analyze(
         fp_rows=fp_rows,
         unmatched_labels=unmatched_labels,
         gate1_per_finding=gate1_per_finding,
+        gate1_per_finding_counts=gate1_per_finding_counts,
         gate1_per_pr=gate1_per_pr,
+        gate1_per_pr_counts=gate1_per_pr_counts,
         gate1_by_type=gate1_by_type,
+        gate1_by_type_counts=gate1_by_type_counts,
+        gate1_by_type_per_pr=gate1_by_type_per_pr,
+        gate1_by_type_per_pr_counts=gate1_by_type_per_pr_counts,
         snapshot_count=snapshot_count,
         history_starts_at=window_start,
         policy_fallback=policy_fallback,

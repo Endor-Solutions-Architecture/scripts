@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from analyze import analyze
 from collect import CollectError, collect
-from render_csv import read_labels_csv, write_csvs, write_summary
+from render_csv import LabelError, read_labels_csv, write_csvs, write_summary
 from render_pdf import write_pdf
 from snapshot import Snapshot, SnapshotError, load_snapshot, load_snapshot_dir, save_snapshot
 
@@ -41,6 +41,21 @@ def output_root(namespace: str) -> Path:
 
 def _timestamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+
+
+def _reserve_output_dir(parent: Path, name: str) -> Path:
+    parent = Path(parent)
+    parent.mkdir(parents=True, exist_ok=True)
+    suffix = 0
+    while True:
+        candidate_name = name if suffix == 0 else f"{name}-{suffix}"
+        candidate = parent / candidate_name
+        try:
+            candidate.mkdir(exist_ok=False)
+        except FileExistsError:
+            suffix += 1
+            continue
+        return candidate
 
 
 def _warn_if_days_exceed_retention(days: int) -> None:
@@ -86,8 +101,7 @@ def cmd_collect(args: Any) -> Path:
         customer=args.customer,
         decision_date=args.decision_date,
     )
-    out = output_root(args.namespace) / _timestamp()
-    out.mkdir(parents=True, exist_ok=True)
+    out = _reserve_output_dir(output_root(args.namespace), _timestamp())
     save_snapshot(snapshot, out)
     return out
 
@@ -103,7 +117,7 @@ def cmd_report(args: Any) -> Path:
         return _write_report_files(snapshot, out, labels=labels, snapshot_count=1)
     directory = Path(args.snapshot_dir)
     snapshot = load_snapshot_dir(directory)
-    out = directory / ("union-" + _timestamp())
+    out = _reserve_output_dir(directory, "union-" + _timestamp())
     return _write_report_files(
         snapshot,
         out,
@@ -174,7 +188,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(" ".join(str(part) for part in exc.command), file=sys.stderr)
         print(str(exc), file=sys.stderr)
         return 1
-    except SnapshotError as exc:
+    except (SnapshotError, LabelError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
     except SystemExit as exc:
