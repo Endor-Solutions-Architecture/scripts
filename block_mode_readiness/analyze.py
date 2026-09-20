@@ -141,7 +141,6 @@ def analyze(
     labels: Optional[List[Dict[str, str]]] = None,
     snapshot_count: int = 1,
 ) -> Analysis:
-    _ = labels  # Gate 1 is Task 4; labels are ignored here.
     scans = list(snapshot.scans.values())
     findings = snapshot.findings
 
@@ -348,6 +347,55 @@ def analyze(
                 finding.severity
             ] += 1
 
+    unmatched_labels: List[Dict[str, str]] = []
+    gate1_per_finding: Optional[float] = None
+    gate1_per_pr: Optional[float] = None
+    gate1_by_type: Optional[Dict[str, Optional[float]]] = None
+    if labels is not None:
+        fp_index = {
+            (row["finding_uuid"], row["scan_result_uuid"]): row for row in fp_rows
+        }
+        for label in labels:
+            key = (label["finding_uuid"], label["scan_result_uuid"])
+            row = fp_index.get(key)
+            if row is None:
+                unmatched_labels.append(label)
+                continue
+            row["fp"] = label.get("fp", "")
+            row["reason"] = label.get("reason", "")
+
+        yes_no: List[Tuple[str, Dict[str, Any]]] = []
+        for row in fp_rows:
+            fp_val = str(row.get("fp", "")).strip().lower()
+            if fp_val in ("yes", "no"):
+                yes_no.append((fp_val, row))
+
+        yes_count = sum(1 for fp_val, _ in yes_no if fp_val == "yes")
+        gate1_per_finding = pct(yes_count, len(yes_no))
+
+        pr_groups: Dict[Tuple[str, str], List[str]] = defaultdict(list)
+        type_yes: Dict[str, int] = defaultdict(int)
+        type_total: Dict[str, int] = defaultdict(int)
+        for fp_val, row in yes_no:
+            pr_groups[(row["project_uuid"], row["pr_url"])].append(fp_val)
+            vtype = row["violation_type"]
+            type_total[vtype] += 1
+            if fp_val == "yes":
+                type_yes[vtype] += 1
+
+        fp_prs = 0
+        tp_prs = 0
+        for values in pr_groups.values():
+            if all(value == "yes" for value in values):
+                fp_prs += 1
+            elif any(value == "no" for value in values):
+                tp_prs += 1
+        gate1_per_pr = pct(fp_prs, fp_prs + tp_prs)
+        gate1_by_type = {
+            vtype: pct(type_yes[vtype], type_total[vtype])
+            for vtype in sorted(type_total)
+        }
+
     return Analysis(
         window_start=window_start,
         window_end=window_end,
@@ -366,10 +414,10 @@ def analyze(
         trajectories=trajectories,
         pr_check_rows=pr_check_rows,
         fp_rows=fp_rows,
-        unmatched_labels=[],
-        gate1_per_finding=None,
-        gate1_per_pr=None,
-        gate1_by_type=None,
+        unmatched_labels=unmatched_labels,
+        gate1_per_finding=gate1_per_finding,
+        gate1_per_pr=gate1_per_pr,
+        gate1_by_type=gate1_by_type,
         snapshot_count=snapshot_count,
         history_starts_at=window_start,
         policy_fallback=policy_fallback,

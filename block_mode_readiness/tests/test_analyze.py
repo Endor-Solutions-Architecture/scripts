@@ -51,3 +51,78 @@ def test_fp_rows_blank_and_clean_scans_in_pr_checks():
     assert all(r["fp"] == "" and r["reason"] == "" for r in a.fp_rows)
     assert any(r["outcome"] == "clean" for r in a.pr_check_rows)
     assert a.gate1_per_finding is None
+
+
+def test_labels_join_and_unmatched():
+    snap = full_sample_snapshot()
+    a0 = analyze(snap)
+    row = a0.fp_rows[0]
+    labels = [
+        {"finding_uuid": row["finding_uuid"], "scan_result_uuid": row["scan_result_uuid"],
+         "fp": "yes", "reason": "noise"},
+        {"finding_uuid": "missing", "scan_result_uuid": "missing", "fp": "no", "reason": ""},
+    ]
+    a = analyze(snap, labels=labels)
+    matched = [r for r in a.fp_rows if r["fp"] == "yes"]
+    assert len(matched) == 1
+    assert matched[0]["reason"] == "noise"
+    assert len(a.unmatched_labels) == 1
+    assert a.gate1_per_finding == 100.0
+
+
+def test_gate1_mixed_yes_no():
+    snap = full_sample_snapshot()
+    a0 = analyze(snap)
+    labels = [
+        {"finding_uuid": a0.fp_rows[0]["finding_uuid"],
+         "scan_result_uuid": a0.fp_rows[0]["scan_result_uuid"], "fp": "yes", "reason": ""},
+        {"finding_uuid": a0.fp_rows[1]["finding_uuid"],
+         "scan_result_uuid": a0.fp_rows[1]["scan_result_uuid"], "fp": "no", "reason": ""},
+    ]
+    a = analyze(snap, labels=labels)
+    assert a.gate1_per_finding == 50.0
+
+
+def test_gate1_per_pr_and_by_type():
+    snap = full_sample_snapshot()
+    a0 = analyze(snap)
+    labels = [
+        {"finding_uuid": a0.fp_rows[0]["finding_uuid"],
+         "scan_result_uuid": a0.fp_rows[0]["scan_result_uuid"], "fp": "yes", "reason": ""},
+        {"finding_uuid": a0.fp_rows[1]["finding_uuid"],
+         "scan_result_uuid": a0.fp_rows[1]["scan_result_uuid"], "fp": "no", "reason": ""},
+    ]
+    a = analyze(snap, labels=labels)
+    assert a.gate1_per_pr == 0.0
+    assert a.gate1_by_type == {"SAST": 0.0, "Vulnerability": 100.0}
+
+
+def test_gate1_unsure_excluded_and_unmatched_preserves_rows():
+    snap = full_sample_snapshot()
+    a0 = analyze(snap)
+    unmatched = {
+        "finding_uuid": "missing",
+        "scan_result_uuid": "missing",
+        "fp": "no",
+        "reason": "x",
+    }
+    labels = [
+        {"finding_uuid": a0.fp_rows[0]["finding_uuid"],
+         "scan_result_uuid": a0.fp_rows[0]["scan_result_uuid"], "fp": " YES ", "reason": ""},
+        {"finding_uuid": a0.fp_rows[1]["finding_uuid"],
+         "scan_result_uuid": a0.fp_rows[1]["scan_result_uuid"], "fp": "unsure", "reason": ""},
+        unmatched,
+    ]
+    a = analyze(snap, labels=labels)
+    assert len(a.fp_rows) == len(a0.fp_rows)
+    assert a.unmatched_labels == [unmatched]
+    assert a.gate1_per_finding == 100.0
+    assert a.gate1_per_pr == 100.0
+    assert a.gate1_by_type == {"Vulnerability": 100.0}
+    assert a.checks_total == a0.checks_total
+    assert a.checks_warn == a0.checks_warn
+    assert a.d_acted == a0.d_acted
+    assert a.d_still_open == a0.d_still_open
+    assert a.d_single_scan == a0.d_single_scan
+    assert a.d_cleared == a0.d_cleared
+    assert a.d_warned_prs == a0.d_warned_prs
