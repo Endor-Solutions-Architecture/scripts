@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from collect import CollectError, collect
+from collect import SCAN_FIELD_MASK, CollectError, collect
 
 
 def _list(objects):
@@ -362,6 +362,82 @@ def test_collect_fails_when_finding_lookup_omits_requested_uuid():
 
     assert exc.value.command is not None
     assert "Finding" in exc.value.command
+
+
+def test_scan_field_mask_uses_real_scan_result_paths():
+    assert "spec.policies_triggered" in SCAN_FIELD_MASK
+    assert "spec.blocking_findings" in SCAN_FIELD_MASK
+    assert "spec.warning_findings" in SCAN_FIELD_MASK
+    for invalid in (
+        "spec.policy_name",
+        "spec.triggered_policies",
+        "spec.action_policies",
+    ):
+        assert invalid not in SCAN_FIELD_MASK.split(",")
+
+
+def test_collect_resolves_policy_name_from_policies_triggered():
+    def runner(args, namespace, timeout=120):
+        kind = args[args.index("-r") + 1]
+        if kind == "Project":
+            return _list([_tagged_project()])
+        if kind == "Policy":
+            return _list(
+                [
+                    {
+                        "uuid": "pol-warn",
+                        "meta": {"name": "SCA warn"},
+                        "spec": {
+                            "policy_type": "POLICY_TYPE_ADMISSION",
+                            "disable": False,
+                            "project_selector": ["rollout-wave-1"],
+                        },
+                    }
+                ]
+            )
+        if kind == "ScanResult":
+            mask = args[args.index("--field-mask") + 1]
+            assert "spec.policies_triggered" in mask
+            assert "spec.policy_name" not in mask.split(",")
+            return _list(
+                [
+                    {
+                        "uuid": "s-warn",
+                        "meta": {
+                            "create_time": "2026-03-01T00:00:00Z",
+                            "parent_uuid": "p-alpha",
+                            "tags": ["pr=1"],
+                        },
+                        "tenant_meta": {"namespace": "example-corp"},
+                        "context": {"tags": []},
+                        "spec": {
+                            "status": "ok",
+                            "warning_findings": ["f1"],
+                            "blocking_findings": [],
+                            "policies_triggered": ["pol-warn"],
+                        },
+                    }
+                ]
+            )
+        if kind == "Finding":
+            return _list(
+                [
+                    {
+                        "uuid": "f1",
+                        "meta": {"name": "cve", "description": "a finding"},
+                        "tenant_meta": {"namespace": "example-corp"},
+                        "spec": {
+                            "level": "FINDING_LEVEL_CRITICAL",
+                            "finding_categories": ["FINDING_CATEGORY_VULNERABILITY"],
+                            "finding_tags": [],
+                        },
+                    }
+                ]
+            )
+        raise AssertionError(kind)
+
+    snap = collect("example-corp", ["rollout-wave-1"], 21, runner=runner)
+    assert snap.scans["s-warn"].policy_name == "SCA warn"
 
 
 def test_scan_query_uses_ci_timeout_and_chunk_size():

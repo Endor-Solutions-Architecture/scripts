@@ -99,7 +99,10 @@ def _first_name_from_policy_field(value: Any) -> str:
     return name or ""
 
 
-def extract_policy_name(scan: Dict[str, Any]) -> str:
+def extract_policy_name(
+    scan: Dict[str, Any],
+    policy_names: Optional[Dict[str, str]] = None,
+) -> str:
     spec = scan.get("spec", {}) or {}
     policy_name = spec.get("policy_name")
     if isinstance(policy_name, str) and policy_name:
@@ -108,6 +111,10 @@ def extract_policy_name(scan: Dict[str, Any]) -> str:
         name = _first_name_from_policy_field(spec.get(key))
         if name:
             return name
+    if policy_names:
+        for uuid in spec.get("policies_triggered") or []:
+            if isinstance(uuid, str) and uuid in policy_names:
+                return policy_names[uuid]
     return ""
 
 

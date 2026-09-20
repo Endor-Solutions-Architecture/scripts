@@ -27,7 +27,7 @@ POLICY_FIELD_MASK = (
 SCAN_FIELD_MASK = (
     "uuid,meta.create_time,meta.parent_uuid,meta.tags,tenant_meta.namespace,"
     "context.tags,spec.status,spec.blocking_findings,spec.warning_findings,"
-    "spec.policy_name,spec.triggered_policies,spec.action_policies"
+    "spec.policies_triggered"
 )
 FINDING_FIELD_MASK = (
     "uuid,meta.name,meta.description,spec.level,spec.finding_categories,"
@@ -172,7 +172,10 @@ def _policy_from_obj(obj: Dict[str, Any]) -> Policy:
     )
 
 
-def _scan_from_obj(obj: Dict[str, Any]) -> Scan:
+def _scan_from_obj(
+    obj: Dict[str, Any],
+    policy_names: Optional[Dict[str, str]] = None,
+) -> Scan:
     spec = obj.get("spec") or {}
     meta = obj.get("meta") or {}
     return Scan(
@@ -185,7 +188,7 @@ def _scan_from_obj(obj: Dict[str, Any]) -> Scan:
         blocking_finding_ids=list(spec.get("blocking_findings") or []),
         status=spec.get("status") or "",
         namespace=(obj.get("tenant_meta") or {}).get("namespace") or "",
-        policy_name=extract_policy_name(obj),
+        policy_name=extract_policy_name(obj, policy_names),
     )
 
 
@@ -353,6 +356,7 @@ def collect(
         raise CollectError(f"no projects matched project tags: {', '.join(project_tags)}")
 
     policies: List[Policy] = []
+    policy_names: Dict[str, str] = {}
     for obj in _list_kind(
         query,
         "Policy",
@@ -360,6 +364,10 @@ def collect(
         POLICY_FIELD_MASK,
         namespace,
     ):
+        uuid = obj.get("uuid") or ""
+        name = (obj.get("meta") or {}).get("name") or ""
+        if uuid and name:
+            policy_names[uuid] = name
         if _policy_applies(obj, projects.values()):
             policies.append(_policy_from_obj(obj))
 
@@ -403,7 +411,7 @@ def collect(
     scans: Dict[str, Scan] = {}
     ci_runs_dropped_no_pr = 0
     for obj in scan_objs:
-        scan = _scan_from_obj(obj)
+        scan = _scan_from_obj(obj, policy_names)
         if not scan.pr_number:
             ci_runs_dropped_no_pr += 1
             continue

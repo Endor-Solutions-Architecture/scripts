@@ -63,3 +63,9 @@ def test_trajectory_buckets():
 def test_policy_name_from_list():
     scan = {"spec": {"triggered_policies": [{"meta": {"name": "SCA warn"}}]}}
     assert extract_policy_name(scan) == "SCA warn"
+
+
+def test_policy_name_from_triggered_uuids():
+    scan = {"spec": {"policies_triggered": ["pol-warn", "pol-other"]}}
+    assert extract_policy_name(scan) == ""
+    assert extract_policy_name(scan, {"pol-warn": "SCA warn"}) == "SCA warn"
