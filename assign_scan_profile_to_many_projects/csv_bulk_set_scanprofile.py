@@ -5,6 +5,11 @@ Requires the ``endorlabs`` Python SDK and credentials with list access to the
 tenant. ``--apply`` additionally requires Project update permission on that
 tenant (privileged-read / admin-read tokens are dry-run only).
 
+Optional ``--rescan`` (with assign/clear) or ``--rescan-only`` requests an App
+full rescan via ``processing_status.scan_state =
+SCAN_STATE_REQUEST_FULL_RESCAN`` (same wire path as the UI Rescan Project
+button).
+
 See README.md in this directory.
 """
 
@@ -274,6 +279,27 @@ def _resolve_projects_parallel(
     return results
 
 
+RESCAN_STATE = "SCAN_STATE_REQUEST_FULL_RESCAN"
+RESCAN_UPDATE_MASK = (
+    "processing_status.scan_state,processing_status.scan_time"
+)
+
+
+def _request_full_rescan(client: Client, project: Any) -> None:
+    """Queue an App full rescan (UI Rescan Project equivalent)."""
+    ps = getattr(project, "processing_status", None)
+    if ps is None:
+        raise RuntimeError("project has no processing_status")
+    ps.scan_state = RESCAN_STATE
+    ps.scan_time = None
+    ns = _dig(_as_dict(project), "tenant_meta", "namespace") or None
+    client.Project.update(
+        project,
+        update_mask=RESCAN_UPDATE_MASK,
+        namespace=ns,
+    )
+
+
 def _write_result_csv(path: Path, rows: list[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fields = [
@@ -285,6 +311,7 @@ def _write_result_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         "target_scan_profile_uuid",
         "action",
         "status",
+        "rescan_status",
         "error",
         "mode",
     ]
@@ -299,7 +326,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description=(
             "Assign or clear Project scan profiles from a CSV. "
-            "Dry-run by default; use --apply to write."
+            "Dry-run by default; use --apply to write. "
+            "Optional --rescan / --rescan-only queues App full rescans."
         )
     )
     p.add_argument(
@@ -324,6 +352,14 @@ def build_parser() -> argparse.ArgumentParser:
             "is_default profile (not the same as -sp Default)"
         ),
     )
+    target.add_argument(
+        "--rescan-only",
+        action="store_true",
+        help=(
+            "Do not change scan profiles; only queue App full rescans for "
+            "resolved CSV rows (honors -b). Implies rescan behavior."
+        ),
+    )
     p.add_argument(
         "-b",
         "--batch",
@@ -343,6 +379,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--apply",
         action="store_true",
         help="Write changes (omit for dry-run). Requires Project update permission.",
+    )
+    p.add_argument(
+        "--rescan",
+        action="store_true",
+        help=(
+            "After a successful profile assign/clear (--apply), also queue an "
+            "App full rescan (processing_status.scan_state="
+            f"{RESCAN_STATE}). Dry-run reports would_rescan."
+        ),
     )
     p.add_argument(
         "--workers",
@@ -372,11 +417,21 @@ def main(argv: list[str] | None = None) -> int:
         print("ERROR: set -n/--tenant or ENDOR_NAMESPACE", file=sys.stderr)
         return 2
 
+    rescan_only = bool(args.rescan_only)
+    want_rescan = bool(args.rescan) or rescan_only
+
     client = Client(tenant=tenant)
     clear_to_default = bool(args.clear)
-    if clear_to_default:
+    if rescan_only:
         target_uuid = ""
         profile_meta: dict[str, Any] = {
+            "uuid": "",
+            "name": "(rescan_only)",
+            "namespace": None,
+        }
+    elif clear_to_default:
+        target_uuid = ""
+        profile_meta = {
             "uuid": "",
             "name": "(inherit is_default)",
             "namespace": None,
@@ -389,13 +444,18 @@ def main(argv: list[str] | None = None) -> int:
         json.dumps(
             {
                 "tenant": tenant,
-                "target_mode": "inherit_default" if clear_to_default else "set_profile",
+                "target_mode": (
+                    "rescan_only"
+                    if rescan_only
+                    else ("inherit_default" if clear_to_default else "set_profile")
+                ),
                 "scan_profile_uuid": target_uuid or None,
                 "scan_profile_name": profile_meta.get("name"),
                 "scan_profile_namespace": profile_meta.get("namespace"),
                 "csv": str(args.csv),
                 "batch": args.batch,
                 "mode": "apply" if args.apply else "dry_run",
+                "rescan": want_rescan,
             },
             indent=2,
         )
@@ -420,11 +480,18 @@ def main(argv: list[str] | None = None) -> int:
             "mode": "apply" if args.apply else "dry_run",
             "action": "",
             "status": "",
+            "rescan_status": "",
             "error": rp.error,
         }
         if rp.error or not rp.uuid:
             base["action"] = "skip"
             base["status"] = "resolve_error"
+            result_rows.append(base)
+            continue
+        if rescan_only:
+            to_change.append(rp)
+            base["action"] = "pending_batch"
+            base["status"] = "queued"
             result_rows.append(base)
             continue
         already = (not current) if clear_to_default else (current == target_uuid)
@@ -446,10 +513,14 @@ def main(argv: list[str] | None = None) -> int:
         if base["action"] != "pending_batch":
             continue
         if base["project_uuid"] in selected_ids:
-            base["action"] = (
-                "clear_scan_profile" if clear_to_default else "set_scan_profile"
-            )
-            base["status"] = "would_update" if not args.apply else "updating"
+            if rescan_only:
+                base["action"] = "rescan"
+                base["status"] = "would_rescan" if not args.apply else "rescanning"
+            else:
+                base["action"] = (
+                    "clear_scan_profile" if clear_to_default else "set_scan_profile"
+                )
+                base["status"] = "would_update" if not args.apply else "updating"
         else:
             base["action"] = "defer"
             base["status"] = "beyond_batch"
@@ -458,9 +529,17 @@ def main(argv: list[str] | None = None) -> int:
         base = next(b for b in result_rows if b["project_uuid"] == rp.uuid)
         try:
             if not args.apply:
-                base["status"] = "would_update"
-            else:
-                project = client.Project.get(rp.uuid, namespace=rp.namespace)
+                if rescan_only:
+                    base["status"] = "would_rescan"
+                    base["rescan_status"] = "would_rescan"
+                else:
+                    base["status"] = "would_update"
+                    if want_rescan:
+                        base["rescan_status"] = "would_rescan"
+                continue
+
+            project = client.Project.get(rp.uuid, namespace=rp.namespace)
+            if not rescan_only:
                 project.spec.scan_profile_uuid = (
                     None if clear_to_default else target_uuid
                 )
@@ -471,15 +550,28 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 base["status"] = "updated"
                 base["current_scan_profile_uuid"] = target_uuid
+                # re-get so processing_status is fresh for rescan
+                if want_rescan:
+                    project = client.Project.get(rp.uuid, namespace=rp.namespace)
+
+            if want_rescan:
+                _request_full_rescan(client, project)
+                base["rescan_status"] = "rescan_requested"
+                if rescan_only:
+                    base["status"] = "rescan_requested"
         except Exception as exc:  # noqa: BLE001
-            base["status"] = "error"
+            if want_rescan and base.get("status") in {"updated", "rescanning"}:
+                base["rescan_status"] = "rescan_error"
+            else:
+                base["status"] = "error"
             base["error"] = f"{type(exc).__name__}: {exc}"
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     results_dir = args.results_dir or (args.csv.parent / "bulk_set_results")
-    out_csv = results_dir / (
-        f"bulk_set_{stamp}_{'apply' if args.apply else 'dryrun'}.csv"
-    )
+    mode_tag = "apply" if args.apply else "dryrun"
+    if rescan_only:
+        mode_tag = f"rescan_{mode_tag}"
+    out_csv = results_dir / f"bulk_set_{stamp}_{mode_tag}.csv"
     _write_result_csv(out_csv, result_rows)
 
     summary = {
@@ -491,11 +583,26 @@ def main(argv: list[str] | None = None) -> int:
         "deferred_beyond_batch": len(deferred),
         "updated": sum(1 for b in result_rows if b["status"] == "updated"),
         "would_update": sum(1 for b in result_rows if b["status"] == "would_update"),
+        "rescan_requested": sum(
+            1 for b in result_rows if b.get("rescan_status") == "rescan_requested"
+        ),
+        "would_rescan": sum(
+            1
+            for b in result_rows
+            if b.get("rescan_status") == "would_rescan" or b["status"] == "would_rescan"
+        ),
+        "rescan_errors": sum(
+            1 for b in result_rows if b.get("rescan_status") == "rescan_error"
+        ),
         "apply_errors": sum(1 for b in result_rows if b["status"] == "error"),
         "results_csv": str(out_csv),
     }
     print(json.dumps(summary, indent=2))
-    return 1 if summary["apply_errors"] or summary["resolve_errors"] else 0
+    return 1 if (
+        summary["apply_errors"]
+        or summary["resolve_errors"]
+        or summary["rescan_errors"]
+    ) else 0
 
 
 if __name__ == "__main__":
