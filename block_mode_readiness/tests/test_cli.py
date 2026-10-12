@@ -24,6 +24,7 @@ def test_report_writes_into_snapshot_dir(tmp_path, monkeypatch):
     assert (snap_dir / "fp_worksheet.csv").exists()
     assert (snap_dir / "pr_trajectories.csv").exists()
     assert (snap_dir / "summary.json").exists()
+    assert (snap_dir / "readiness_dashboard.html").exists()
 
 
 def test_report_snapshot_dir_writes_union_folder(tmp_path):
@@ -35,6 +36,7 @@ def test_report_snapshot_dir_writes_union_folder(tmp_path):
     unions = list(tmp_path.glob("union-*"))
     assert len(unions) == 1
     assert (unions[0] / "readiness_report.pdf").exists()
+    assert (unions[0] / "readiness_dashboard.html").exists()
     assert not (unions[0] / "snapshot.json").exists()
 
 
@@ -223,5 +225,6 @@ def test_run_writes_snapshot_and_report(tmp_path, monkeypatch):
     assert len(outs) == 1
     assert (outs[0] / "snapshot.json").exists()
     assert (outs[0] / "readiness_report.pdf").exists()
+    assert (outs[0] / "readiness_dashboard.html").exists()
     assert (outs[0] / "summary.json").exists()
     assert (outs[0] / "pr_checks.csv").exists()
