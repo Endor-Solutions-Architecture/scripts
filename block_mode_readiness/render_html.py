@@ -110,6 +110,7 @@ def build_dashboard_payload(
         policies.append(
             {
                 **asdict(policy),
+                "state": "disabled" if policy.disabled else "enabled",
                 "warning_findings": warning_findings_by_policy.get(policy.name, 0),
             }
         )
@@ -763,8 +764,8 @@ _HTML = r"""<!doctype html>
       anchor.rel = "noopener noreferrer";
       return anchor;
     };
-    const statusBadge = value => {
-      const normalized = String(value || "").toLowerCase().replace(/\s+/g, "_");
+    const statusBadge = (value, tone) => {
+      const normalized = String(tone || value || "").toLowerCase().replace(/\s+/g, "_");
       return make("span", `badge badge-${normalized || "empty"}`, value || "unlabeled");
     };
     const rateDetail = (numerator, denominator) => `${number(numerator)} / ${number(denominator)}`;
@@ -960,7 +961,7 @@ _HTML = r"""<!doctype html>
         {key: "name", label: "Policy"},
         {key: "uuid", label: "UUID"},
         {key: "selector_tags", label: "Selector tags", value: row => row.selector_tags.join(", ")},
-        {key: "disabled", label: "State", value: row => row.disabled ? "Disabled" : "Enabled", render: row => statusBadge(row.disabled ? "block" : "clean")},
+        {key: "state", label: "State", render: row => statusBadge(row.state, row.disabled ? "block" : "clean")},
         {key: "warning_findings", label: "Warning findings", numeric: true},
       ], {
         searchPlaceholder: "Search policies or selector tags",

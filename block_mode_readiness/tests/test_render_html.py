@@ -33,6 +33,7 @@ def test_dashboard_payload_contains_consolidated_readiness_data():
     assert len(payload["pr_checks"]) == 8
     assert len(payload["trajectories"]) == 4
     assert payload["policies"][0]["name"] == "Warn on critical"
+    assert payload["policies"][0]["state"] == "enabled"
     assert payload["capabilities"] == {
         "pr_comments": False,
         "merge_status": False,
