@@ -65,9 +65,10 @@ def _daily_rows(snapshot: Snapshot) -> List[Dict[str, Any]]:
 
 def _logo_data_uri() -> str:
     try:
-        data = LOGO_PATH.read_bytes()
-    except OSError:
+        svg = LOGO_PATH.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
         return ""
+    data = svg.replace("CurrentColor", BRAND["white"]).encode("utf-8")
     encoded = base64.b64encode(data).decode("ascii")
     return f"data:image/svg+xml;base64,{encoded}"
 
@@ -119,6 +120,13 @@ def build_dashboard_payload(
         violation_type: dict(severities)
         for violation_type, severities in analysis.finding_counts_by_type_severity.items()
     }
+    pr_checks: List[Dict[str, Any]] = []
+    for row in analysis.pr_check_rows:
+        item = dict(row)
+        item["violation_type_values"] = [
+            value for value in str(row.get("violation_types") or "").split("|") if value
+        ]
+        pr_checks.append(item)
     labeled_finding_counts = (
         list(analysis.gate1_per_finding_counts)
         if analysis.gate1_per_finding_counts is not None
@@ -188,7 +196,7 @@ def build_dashboard_payload(
         "mark_splits": mark_splits,
         "repos": repos,
         "trajectories": [asdict(row) for row in analysis.trajectories],
-        "pr_checks": [dict(row) for row in analysis.pr_check_rows],
+        "pr_checks": pr_checks,
         "findings": [dict(row) for row in analysis.fp_rows],
         "finding_counts_by_type_severity": finding_counts,
         "false_positives": {
@@ -639,6 +647,7 @@ _HTML = r"""<!doctype html>
       <div class="card">
         <h3>Daily checks, warnings, and blocks</h3>
         <div class="chart-wrap"><canvas id="trend-chart" aria-label="Daily PR checks trend chart"></canvas></div>
+        <div id="trend-table"></div>
       </div>
       <div class="card">
         <h3>Policy mark-date comparisons</h3>
@@ -846,6 +855,18 @@ _HTML = r"""<!doctype html>
     }
 
     function renderTrends() {
+      mountTable("trend-table", DATA.daily, [
+        {key: "date", label: "Date"},
+        {key: "checks", label: "Checks", numeric: true},
+        {key: "clean", label: "Clean", numeric: true},
+        {key: "warn", label: "Warn", numeric: true},
+        {key: "block", label: "Block", numeric: true},
+        {key: "warn_rate", label: "Warn rate", numeric: true, format: percent},
+      ], {
+        controls: false,
+        emptyText: "No PR check trend data.",
+        pageSize: 25,
+      });
       if (!DATA.mark_splits.length) {
         byId("mark-splits").append(make("div", "empty-state", "No policy mark dates were supplied."));
       } else {
@@ -984,7 +1005,7 @@ _HTML = r"""<!doctype html>
       ], {
         filters: [
           {key: "outcome", label: "Outcome"},
-          {key: "violation_types", label: "Violation type"},
+          {key: "violation_type_values", label: "Violation type"},
           {key: "status", label: "Scan status"},
         ],
         searchPlaceholder: "Search checks, repositories, PRs, or violation types",
@@ -1031,7 +1052,14 @@ _HTML = r"""<!doctype html>
           const all = make("option", "", `All ${filter.label.toLowerCase()}`);
           all.value = "";
           select.append(all);
-          const values = [...new Set(rows.map(row => text(row[filter.key])).filter(value => value !== "—"))].sort();
+          const values = [...new Set(
+            rows.flatMap(row => {
+              const filterValue = row[filter.key];
+              return Array.isArray(filterValue)
+                ? filterValue.map(value => text(value))
+                : [text(filterValue)];
+            }).filter(value => value !== "—")
+          )].sort();
           values.forEach(value => {
             const option = make("option", "", value);
             option.value = value;
@@ -1093,9 +1121,13 @@ _HTML = r"""<!doctype html>
 
       function filteredRows() {
         let output = rows.filter(row => {
-          const filterMatch = Object.entries(state.filters).every(([key, value]) =>
-            !value || text(row[key]) === value
-          );
+          const filterMatch = Object.entries(state.filters).every(([key, value]) => {
+            if (!value) return true;
+            const filterValue = row[key];
+            return Array.isArray(filterValue)
+              ? filterValue.map(item => text(item)).includes(value)
+              : text(filterValue) === value;
+          });
           if (!filterMatch) return false;
           if (!state.search) return true;
           return columns.some(column =>
@@ -1269,6 +1301,7 @@ _HTML = r"""<!doctype html>
       const y = value => padding.top + plotHeight - Number(value || 0) / max * plotHeight;
       const series = [
         {key: "checks", color: "#3D6B8E", label: "Checks"},
+        {key: "clean", color: "__BRAND_GREEN__", label: "Clean"},
         {key: "warn", color: "__BRAND_WARN__", label: "Warns"},
         {key: "block", color: "__BRAND_BLOCK__", label: "Blocks"},
       ];

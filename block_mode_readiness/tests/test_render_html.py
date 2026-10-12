@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import base64
+
 from analyze import analyze
 from helpers import full_sample_snapshot
-from render_html import build_dashboard_payload, write_html
+from render_html import _logo_data_uri, build_dashboard_payload, write_html
 
 
 def test_dashboard_payload_contains_consolidated_readiness_data():
@@ -31,6 +33,10 @@ def test_dashboard_payload_contains_consolidated_readiness_data():
         "org/beta",
     }
     assert len(payload["pr_checks"]) == 8
+    multi_type_check = next(
+        row for row in payload["pr_checks"] if "|" in row["violation_types"]
+    )
+    assert multi_type_check["violation_type_values"] == ["SAST", "Vulnerability"]
     assert len(payload["trajectories"]) == 4
     assert payload["policies"][0]["name"] == "Warn on critical"
     assert payload["policies"][0]["state"] == "enabled"
@@ -83,6 +89,9 @@ def test_write_html_is_one_safe_self_contained_file(tmp_path):
     assert 'id="tab-policies"' in html
     assert 'id="tab-checks"' in html
     assert 'id="tab-methodology"' in html
+    assert 'id="trend-table"' in html
+    assert '{key: "clean", color:' in html
+    assert "Array.isArray(filterValue)" in html
     assert "<script src=" not in html.lower()
     assert '<link rel="stylesheet"' not in html.lower()
     assert "https://cdn" not in html.lower()
@@ -101,3 +110,11 @@ def test_write_html_contains_explicit_empty_and_unlabeled_states(tmp_path):
     html = path.read_text(encoding="utf-8")
     assert "No PR checks match this snapshot." in html
     assert "False-positive rates require returned labels." in html
+
+
+def test_dashboard_logo_uses_light_wordmark_on_dark_header():
+    uri = _logo_data_uri()
+
+    svg = base64.b64decode(uri.split(",", 1)[1]).decode("utf-8")
+    assert 'fill="#FFFFFF"' in svg
+    assert "CurrentColor" not in svg
