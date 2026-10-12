@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 from analyze import analyze
 from collect import CollectError, collect
 from render_csv import LabelError, read_labels_csv, write_csvs, write_summary
+from render_html import write_html
 from render_pdf import write_pdf
 from snapshot import Snapshot, SnapshotError, load_snapshot, load_snapshot_dir, save_snapshot
 
@@ -86,6 +87,7 @@ def _write_report_files(
     write_csvs(analysis, directory)
     write_summary(analysis, snapshot, directory)
     write_pdf(analysis, snapshot, directory / "readiness_report.pdf")
+    write_html(analysis, snapshot, directory / "readiness_dashboard.html")
     return directory
 
 
