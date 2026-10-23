@@ -1,0 +1,32 @@
+# Template for the dependencies file consumed by tag_dependencies.py.
+#
+# Copy this file to `dependencies.txt` (or any path you pass via
+# --dependencies-file) and fill it with the dependencies you want to tag.
+#
+# Syntax
+# ------
+#  * One dependency per line.
+#  * Format: <package_name>@<version>
+#       - <package_name> is matched case-insensitively against the package
+#         name reported by Endor Labs (the "<ecosystem>://" prefix such as
+#         npm://, pypi://, mvn://, gem://, go://, etc. is stripped before
+#         matching, so just put the bare package name).
+#       - <version> must match `resolved_version` exactly when provided.
+#  * If you omit "@<version>", every version of that package found in the
+#    project will be tagged.
+#  * Lines starting with '#' and blank lines are ignored.
+#  * Duplicate entries (same name + version) are de-duplicated automatically.
+#
+# Examples (uncomment and edit to use)
+# ------------------------------------
+# Tag a specific version of a package:
+# lodash@4.17.21
+# express@4.18.2
+# requests@2.31.0
+#
+# Maven coordinates use "group:artifact" as the package name:
+# org.apache.commons:commons-lang3@3.12.0
+#
+# Tag every version of a package found in the project (no @version):
+# urllib3
+# log4j-core
