@@ -1,0 +1,6 @@
+https://dev.azure.com/tsaekao-endor-ado/webgoat/_git/webgoat
+https://dev.azure.com/tsaekao-endor-ado/bazel-monorepo/_git/bazel-monorepo
+https://dev.azure.com/tsaekao-endor-ado/mudblazor/_git/mudblazor
+https://dev.azure.com/tsaekao-endor-ado/biojava/_git/biojava
+https://dev.azure.com/tsaekao-endor-ado/devsecops-demo/_git/devsecops-demo
+https://github.com/tsaekao-endor/webgoat.git
