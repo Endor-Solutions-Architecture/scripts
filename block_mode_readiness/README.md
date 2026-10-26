@@ -14,6 +14,8 @@ This tool is a fit when you are rolling policies out to a **tagged project set**
 
 Output is a branded PDF, a self-contained interactive HTML dashboard, and CSVs (the work). Re-run weekly: ScanResults last **21 days** in the API, so snapshots are the durable history of a rollout longer than that.
 
+New to the tool? Start with the **[Runbook](RUNBOOK.md)** for a step-by-step walkthrough: running the report, reading the results, weekly collection, and the false-positive review.
+
 Scope is **project tags**, never the whole tenant as a silent fallback. If you do not yet know which tags define the rollout, list them first:
 
 ```bash
