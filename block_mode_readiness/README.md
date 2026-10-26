@@ -10,9 +10,9 @@ This tool is a fit when you are rolling policies out to a **tagged project set**
 | Is the friction everywhere, or a handful of repos? | Section B — concentration, including tagged repos with **zero** warns |
 | Which PRs and findings should security label as true vs false positive? | `fp_worksheet.csv` — PR, finding, and scan links; blank `fp` / `reason` columns to fill and return |
 | Are developers acting on warns (later scan, fewer findings)? | Section D — rescan trajectories (`acted` / `still_open` / `single_scan`). Not merge status. |
-| What is the false-positive rate once labels come back? | Gate 1 in the PDF, from `--labels` on the returned worksheet |
+| What is the false-positive rate once labels come back? | Gate 1 in the PDF and HTML dashboard, from `--labels` on the returned worksheet |
 
-Output is a branded PDF (meeting artifact) plus CSVs (the work). Re-run weekly: ScanResults last **21 days** in the API, so snapshots are the durable history of a rollout longer than that.
+Output is a branded PDF, a self-contained interactive HTML dashboard, and CSVs (the work). Re-run weekly: ScanResults last **21 days** in the API, so snapshots are the durable history of a rollout longer than that.
 
 Scope is **project tags**, never the whole tenant as a silent fallback. If you do not yet know which tags define the rollout, list them first:
 
@@ -72,7 +72,7 @@ python main.py report \
   --snapshot-dir generated_reports/block_mode_readiness/example-corp
 ```
 
-This writes a new `union-<timestamp>/` folder under that directory (unioned PDF + CSVs). It does **not** modify existing collect folders.
+This writes a new `union-<timestamp>/` folder under that directory (unioned PDF, HTML dashboard, and CSVs). It does **not** modify existing collect folders.
 
 **This week only:** `run` (or `collect` then `report --snapshot`) uses a single snapshot—fine for a spot check, not for the full rollout story.
 
@@ -83,8 +83,8 @@ If `--days` is greater than 21, the CLI warns and continues; the caveats page in
 | Command | Purpose |
 |---|---|
 | `collect` | Query the tenant via `endorctl`; write `snapshot.json` + `meta.json` only |
-| `report --snapshot PATH` | One snapshot folder → PDF + CSVs (written into that folder) |
-| `report --snapshot-dir DIR` | Union all collect snapshots under `DIR` → new `union-*` folder |
+| `report --snapshot PATH` | One snapshot folder → PDF + HTML + CSVs (written into that folder) |
+| `report --snapshot-dir DIR` | Union all collect snapshots under `DIR` → new `union-*` folder with PDF + HTML + CSVs |
 | `run` | `collect` + `report` for the current pull (single snapshot) |
 
 `report` never calls the API. Re-rendering an old snapshot does not require scans to still exist in the tenant.
@@ -124,12 +124,14 @@ generated_reports/block_mode_readiness/<namespace>/
     snapshot.json                 # raw API payload for analyze
     meta.json                     # namespace, tags, window, mark-dates, project count, …
     readiness_report.pdf          # after report
+    readiness_dashboard.html      # self-contained, offline dashboard
     pr_checks.csv
     fp_worksheet.csv
     pr_trajectories.csv
     summary.json
   union-<timestamp>/              # decision-week union report only
     readiness_report.pdf
+    readiness_dashboard.html
     pr_checks.csv
     fp_worksheet.csv
     pr_trajectories.csv
@@ -140,7 +142,24 @@ generated_reports/block_mode_readiness/<namespace>/
 
 ## Output files
 
-The PDF is the meeting artifact. The CSVs are the work.
+The PDF and HTML dashboard are decision artifacts. The CSVs are the work.
+
+### `readiness_dashboard.html`
+
+A single self-contained HTML snapshot generated from the same `Snapshot` and `Analysis` as the PDF. Open it directly in a current browser; it does not require a server, CDN, or additional credentials. All styles, scripts, charts, data, and the logo are embedded in the file. PR and Endor links require network access only when clicked.
+
+Tabs provide:
+
+- overview metrics and caveats;
+- repository coverage and concentration;
+- daily clean/warn/block trends and mark-date comparisons;
+- developer rescan trajectories;
+- warning findings, fixability/reachability, and false-positive rates when labels are supplied;
+- applicable admission-policy context;
+- the complete searchable PR-check denominator; and
+- definitions and data limitations.
+
+The file is immutable: it reflects the snapshot or union at report-generation time. Regenerate it after collecting another snapshot or returning labels. It does **not** add data that the report does not collect—there is no GitHub merge status, PR-comment coverage, CI duration, remediation workflow status, or pilot-plan progress. Treat the HTML as report data with the same handling requirements as the PDF and CSVs.
 
 ### `pr_checks.csv`
 
@@ -166,7 +185,7 @@ Used for section D and engineering drill-down.
 
 ### `summary.json`
 
-Headline metrics for the PDF and week-over-week comparison. Ships in the folder; not the primary customer-facing artifact.
+Headline metrics for the PDF, HTML dashboard, and week-over-week comparison. Ships in the folder; not the primary customer-facing artifact.
 
 ### `readiness_report.pdf`
 
